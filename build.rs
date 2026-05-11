@@ -3,6 +3,7 @@ use std::{env, fs, path::PathBuf};
 fn main() {
     println!("cargo:rerun-if-changed=shaders/triangle.vert");
     println!("cargo:rerun-if-changed=shaders/triangle.frag");
+    println!("cargo:rerun-if-changed=shaders/circle.comp");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
     let compiler = shaderc::Compiler::new().expect("shaderc compiler");
@@ -25,6 +26,13 @@ fn main() {
         "shaders/triangle.frag",
         shaderc::ShaderKind::Fragment,
         out_dir.join("triangle.frag.spv"),
+    );
+    compile(
+        &compiler,
+        &options,
+        "shaders/circle.comp",
+        shaderc::ShaderKind::Compute,
+        out_dir.join("circle.comp.spv"),
     );
 }
 

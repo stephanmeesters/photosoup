@@ -1,7 +1,9 @@
+mod compute_circle_pipeline;
 mod egui_pipeline;
 mod triangle_pipeline;
 
 use ash::{khr, vk};
+use compute_circle_pipeline::ComputeCirclePipeline;
 use egui_pipeline::EguiPipeline;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{ffi::CString, os::raw::c_char};
@@ -28,6 +30,7 @@ pub struct Renderer {
     swapchain_format: vk::Format,
     swapchain_extent: vk::Extent2D,
     render_pass: vk::RenderPass,
+    compute_circle_pipeline: ComputeCirclePipeline,
     triangle_pipeline: Option<TrianglePipeline>,
     egui_pipeline: EguiPipeline,
     framebuffers: Vec<vk::Framebuffer>,
@@ -127,6 +130,8 @@ impl Renderer {
         let present_queue = unsafe { device.get_device_queue(queue_families.present_family, 0) };
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
 
+        let compute_circle_pipeline = ComputeCirclePipeline::new(&device)
+            .map_err(|e| format!("create_compute_circle_pipeline: {e}"))?;
         let egui_pipeline = EguiPipeline::new(
             &instance,
             physical_device,
@@ -153,6 +158,7 @@ impl Renderer {
             swapchain_format: vk::Format::UNDEFINED,
             swapchain_extent: vk::Extent2D::default(),
             render_pass: vk::RenderPass::null(),
+            compute_circle_pipeline,
             triangle_pipeline: None,
             egui_pipeline,
             framebuffers: Vec::new(),
@@ -245,7 +251,7 @@ impl Renderer {
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let signal_semaphores = [self.render_finished_semaphores[self.current_frame]];
-        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let wait_stages = [vk::PipelineStageFlags::COMPUTE_SHADER];
         let command_buffers = [command_buffer];
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
@@ -321,6 +327,17 @@ impl Renderer {
             self.device
                 .begin_command_buffer(command_buffer, &begin_info)
                 .map_err(|e| format!("begin_command_buffer: {e:?}"))?;
+        }
+
+        self.compute_circle_pipeline.record(
+            &self.device,
+            command_buffer,
+            self.swapchain_images[image_index as usize],
+            image_index as usize,
+            self.swapchain_extent,
+        )?;
+
+        unsafe {
             self.device.cmd_begin_render_pass(
                 command_buffer,
                 &render_pass_info,
@@ -362,6 +379,13 @@ impl Renderer {
                 .get_physical_device_surface_present_modes(self.physical_device, self.surface)
         }
         .map_err(|e| format!("present modes: {e:?}"))?;
+
+        if !surface_caps
+            .supported_usage_flags
+            .contains(vk::ImageUsageFlags::TRANSFER_DST)
+        {
+            return Err("surface does not support transfer destination images".to_string());
+        }
 
         let surface_format = formats
             .iter()
@@ -413,7 +437,7 @@ impl Renderer {
             .image_format(surface_format.format)
             .image_extent(extent)
             .image_array_layers(1)
-            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
             .image_sharing_mode(image_sharing_mode)
             .queue_family_indices(&queue_family_indices)
             .pre_transform(surface_caps.current_transform)
@@ -440,6 +464,13 @@ impl Renderer {
     fn create_render_resources(&mut self) -> Result<(), String> {
         self.create_image_views()?;
         self.create_render_pass()?;
+        self.compute_circle_pipeline.recreate_targets(
+            &self.instance,
+            &self.device,
+            self.physical_device,
+            self.swapchain_images.len(),
+            self.swapchain_extent,
+        )?;
         self.triangle_pipeline = Some(TrianglePipeline::new(
             &self.device,
             self.render_pass,
@@ -481,11 +512,11 @@ impl Renderer {
         let color_attachment = vk::AttachmentDescription::default()
             .format(self.swapchain_format)
             .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .load_op(vk::AttachmentLoadOp::LOAD)
             .store_op(vk::AttachmentStoreOp::STORE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
         let color_attachment_ref = vk::AttachmentReference::default()
             .attachment(0)
@@ -591,6 +622,7 @@ impl Renderer {
             if let Some(mut triangle_pipeline) = self.triangle_pipeline.take() {
                 triangle_pipeline.destroy(&self.device);
             }
+            self.compute_circle_pipeline.destroy_targets(&self.device);
             if self.render_pass != vk::RenderPass::null() {
                 self.device.destroy_render_pass(self.render_pass, None);
                 self.render_pass = vk::RenderPass::null();
@@ -622,6 +654,7 @@ impl Drop for Renderer {
             if self.command_pool != vk::CommandPool::null() {
                 self.device.destroy_command_pool(self.command_pool, None);
             }
+            self.compute_circle_pipeline.destroy(&self.device);
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
