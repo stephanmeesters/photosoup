@@ -1,0 +1,17 @@
+[package]
+name = "photosoup"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+ash = "0.38"
+ash-window = "0.13"
+egui = "0.31"
+egui-winit = "0.31"
+egui-ash-renderer = "0.8"
+raw-window-handle = "0.6"
+winit = "0.30"
+
+[build-dependencies]
+shaderc = "0.10"
