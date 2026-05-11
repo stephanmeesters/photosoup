@@ -1,10 +1,14 @@
+mod egui_pipeline;
+mod triangle_pipeline;
+
 use ash::{khr, vk};
-use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer};
+use egui_pipeline::EguiPipeline;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{ffi::CString, os::raw::c_char};
+use triangle_pipeline::TrianglePipeline;
 use winit::window::Window;
 
-const MAX_FRAMES_IN_FLIGHT: usize = 2;
+pub(super) const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 pub struct Renderer {
     _entry: ash::Entry,
@@ -24,16 +28,14 @@ pub struct Renderer {
     swapchain_format: vk::Format,
     swapchain_extent: vk::Extent2D,
     render_pass: vk::RenderPass,
-    pipeline_layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
-    egui_renderer: EguiRenderer,
+    triangle_pipeline: Option<TrianglePipeline>,
+    egui_pipeline: EguiPipeline,
     framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
-    pending_egui_free: [Vec<egui::TextureId>; MAX_FRAMES_IN_FLIGHT],
     current_frame: usize,
     pending_extent: Option<vk::Extent2D>,
 }
@@ -125,18 +127,13 @@ impl Renderer {
         let present_queue = unsafe { device.get_device_queue(queue_families.present_family, 0) };
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
 
-        let egui_renderer = EguiRenderer::with_default_allocator(
+        let egui_pipeline = EguiPipeline::new(
             &instance,
             physical_device,
             device.clone(),
             vk::RenderPass::null(),
-            EguiRendererOptions {
-                in_flight_frames: MAX_FRAMES_IN_FLIGHT,
-                srgb_framebuffer: true,
-                ..Default::default()
-            },
         )
-        .map_err(|e| format!("create_egui_renderer: {e:?}"))?;
+        .map_err(|e| format!("create_egui_pipeline: {e}"))?;
 
         let mut renderer = Self {
             _entry: entry,
@@ -156,16 +153,14 @@ impl Renderer {
             swapchain_format: vk::Format::UNDEFINED,
             swapchain_extent: vk::Extent2D::default(),
             render_pass: vk::RenderPass::null(),
-            pipeline_layout: vk::PipelineLayout::null(),
-            pipeline: vk::Pipeline::null(),
-            egui_renderer,
+            triangle_pipeline: None,
+            egui_pipeline,
             framebuffers: Vec::new(),
             command_pool: vk::CommandPool::null(),
             command_buffers: Vec::new(),
             image_available_semaphores: Vec::new(),
             render_finished_semaphores: Vec::new(),
             in_flight_fences: Vec::new(),
-            pending_egui_free: std::array::from_fn(|_| Vec::new()),
             current_frame: 0,
             pending_extent: None,
         };
@@ -177,9 +172,8 @@ impl Renderer {
         })?;
         renderer.create_render_resources()?;
         renderer
-            .egui_renderer
-            .set_render_pass(renderer.render_pass)
-            .map_err(|e| format!("set_egui_render_pass: {e:?}"))?;
+            .egui_pipeline
+            .set_render_pass(renderer.render_pass)?;
         renderer.create_sync_objects()?;
         Ok(renderer)
     }
@@ -204,7 +198,7 @@ impl Renderer {
             eprintln!("{err}");
             return;
         }
-        if let Err(err) = self.egui_renderer.set_render_pass(self.render_pass) {
+        if let Err(err) = self.egui_pipeline.set_render_pass(self.render_pass) {
             eprintln!("set_egui_render_pass: {err:?}");
         }
     }
@@ -220,12 +214,12 @@ impl Renderer {
                 .map_err(|e| RendererError::Fatal(format!("reset_fences: {e:?}")))?;
         }
 
-        if !self.pending_egui_free[self.current_frame].is_empty() {
-            self.egui_renderer
-                .free_textures(&self.pending_egui_free[self.current_frame])
-                .map_err(|e| RendererError::Fatal(format!("egui free_textures: {e:?}")))?;
-            self.pending_egui_free[self.current_frame].clear();
-        }
+        self.egui_pipeline.begin_frame(
+            self.current_frame,
+            self.graphics_queue,
+            self.command_pool,
+            egui_frame.as_ref(),
+        )?;
 
         let (image_index, acquire_suboptimal) = unsafe {
             self.swapchain_loader.acquire_next_image(
@@ -243,16 +237,6 @@ impl Renderer {
         if acquire_suboptimal {
             self.recreate_swapchain();
             return Ok(());
-        }
-
-        if let Some(frame) = egui_frame.as_ref() {
-            self.egui_renderer
-                .set_textures(
-                    self.graphics_queue,
-                    self.command_pool,
-                    frame.textures_delta.set.as_slice(),
-                )
-                .map_err(|e| RendererError::Fatal(format!("egui set_textures: {e:?}")))?;
         }
 
         let command_buffer = self.command_buffers[image_index as usize];
@@ -288,7 +272,7 @@ impl Renderer {
         };
 
         if let Some(frame) = egui_frame {
-            self.pending_egui_free[self.current_frame] = frame.textures_delta.free;
+            self.egui_pipeline.finish_frame(self.current_frame, frame);
         }
 
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
@@ -342,22 +326,13 @@ impl Renderer {
                 &render_pass_info,
                 vk::SubpassContents::INLINE,
             );
-            self.device.cmd_bind_pipeline(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline,
-            );
-            self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
+            if let Some(triangle_pipeline) = self.triangle_pipeline.as_ref() {
+                triangle_pipeline.record(&self.device, command_buffer);
+            }
 
             if let Some(frame) = egui_frame {
-                self.egui_renderer
-                    .cmd_draw(
-                        command_buffer,
-                        self.swapchain_extent,
-                        frame.pixels_per_point,
-                        frame.clipped_primitives.as_slice(),
-                    )
-                    .map_err(|e| format!("egui cmd_draw: {e:?}"))?;
+                self.egui_pipeline
+                    .record(command_buffer, self.swapchain_extent, frame)?;
             }
 
             self.device.cmd_end_render_pass(command_buffer);
@@ -465,7 +440,11 @@ impl Renderer {
     fn create_render_resources(&mut self) -> Result<(), String> {
         self.create_image_views()?;
         self.create_render_pass()?;
-        self.create_pipeline()?;
+        self.triangle_pipeline = Some(TrianglePipeline::new(
+            &self.device,
+            self.render_pass,
+            self.swapchain_extent,
+        )?);
         self.create_framebuffers()?;
         self.create_command_pool()?;
         self.create_command_buffers()?;
@@ -530,100 +509,6 @@ impl Renderer {
 
         self.render_pass = unsafe { self.device.create_render_pass(&render_pass_info, None) }
             .map_err(|e| format!("create_render_pass: {e:?}"))?;
-        Ok(())
-    }
-
-    fn create_pipeline(&mut self) -> Result<(), String> {
-        let vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/triangle.vert.spv"));
-        let frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/triangle.frag.spv"));
-
-        let vert_shader_module = create_shader_module(&self.device, vert_spv)?;
-        let frag_shader_module = create_shader_module(&self.device, frag_spv)?;
-
-        let entry_name = CString::new("main").unwrap();
-        let stages = [
-            vk::PipelineShaderStageCreateInfo::default()
-                .module(vert_shader_module)
-                .name(&entry_name)
-                .stage(vk::ShaderStageFlags::VERTEX),
-            vk::PipelineShaderStageCreateInfo::default()
-                .module(frag_shader_module)
-                .name(&entry_name)
-                .stage(vk::ShaderStageFlags::FRAGMENT),
-        ];
-
-        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .primitive_restart_enable(false);
-        let viewport = vk::Viewport::default()
-            .x(0.0)
-            .y(0.0)
-            .width(self.swapchain_extent.width as f32)
-            .height(self.swapchain_extent.height as f32)
-            .min_depth(0.0)
-            .max_depth(1.0);
-        let scissor = vk::Rect2D::default()
-            .offset(vk::Offset2D { x: 0, y: 0 })
-            .extent(self.swapchain_extent);
-        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-            .viewports(std::slice::from_ref(&viewport))
-            .scissors(std::slice::from_ref(&scissor));
-        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
-            .depth_clamp_enable(false)
-            .rasterizer_discard_enable(false)
-            .polygon_mode(vk::PolygonMode::FILL)
-            .line_width(1.0)
-            .cull_mode(vk::CullModeFlags::BACK)
-            .front_face(vk::FrontFace::CLOCKWISE)
-            .depth_bias_enable(false);
-        let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
-            .sample_shading_enable(false)
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
-            .color_write_mask(
-                vk::ColorComponentFlags::R
-                    | vk::ColorComponentFlags::G
-                    | vk::ColorComponentFlags::B
-                    | vk::ColorComponentFlags::A,
-            )
-            .blend_enable(false);
-        let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
-            .logic_op_enable(false)
-            .attachments(std::slice::from_ref(&color_blend_attachment));
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
-
-        self.pipeline_layout = unsafe {
-            self.device
-                .create_pipeline_layout(&pipeline_layout_info, None)
-        }
-        .map_err(|e| format!("create_pipeline_layout: {e:?}"))?;
-
-        let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&stages)
-            .vertex_input_state(&vertex_input)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer)
-            .multisample_state(&multisampling)
-            .color_blend_state(&color_blending)
-            .layout(self.pipeline_layout)
-            .render_pass(self.render_pass)
-            .subpass(0);
-
-        self.pipeline = unsafe {
-            self.device.create_graphics_pipelines(
-                vk::PipelineCache::null(),
-                std::slice::from_ref(&pipeline_info),
-                None,
-            )
-        }
-        .map_err(|(_, e)| format!("create_graphics_pipelines: {e:?}"))?[0];
-
-        unsafe {
-            self.device.destroy_shader_module(vert_shader_module, None);
-            self.device.destroy_shader_module(frag_shader_module, None);
-        }
         Ok(())
     }
 
@@ -703,14 +588,8 @@ impl Renderer {
                     .free_command_buffers(self.command_pool, &self.command_buffers);
             }
             self.command_buffers.clear();
-            if self.pipeline != vk::Pipeline::null() {
-                self.device.destroy_pipeline(self.pipeline, None);
-                self.pipeline = vk::Pipeline::null();
-            }
-            if self.pipeline_layout != vk::PipelineLayout::null() {
-                self.device
-                    .destroy_pipeline_layout(self.pipeline_layout, None);
-                self.pipeline_layout = vk::PipelineLayout::null();
+            if let Some(mut triangle_pipeline) = self.triangle_pipeline.take() {
+                triangle_pipeline.destroy(&self.device);
             }
             if self.render_pass != vk::RenderPass::null() {
                 self.device.destroy_render_pass(self.render_pass, None);
@@ -805,12 +684,4 @@ fn find_queue_families(
         }),
         _ => None,
     })
-}
-
-fn create_shader_module(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule, String> {
-    let words = ash::util::read_spv(&mut std::io::Cursor::new(bytes))
-        .map_err(|e| format!("read_spv: {e:?}"))?;
-    let info = vk::ShaderModuleCreateInfo::default().code(&words);
-    unsafe { device.create_shader_module(&info, None) }
-        .map_err(|e| format!("create_shader_module: {e:?}"))
 }
