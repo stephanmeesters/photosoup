@@ -1,4 +1,7 @@
-use crate::renderer::{EguiFrame, Renderer, RendererError};
+use crate::{
+    renderer::{EguiFrame, Renderer, RendererError},
+    ui::{self, UiState},
+};
 use egui_winit::State as EguiWinitState;
 use std::time::Instant;
 use winit::{
@@ -91,14 +94,9 @@ impl ApplicationHandler for App {
                     };
                     let elapsed = now.saturating_duration_since(start_time);
                     let raw_input = egui_state.take_egui_input(window);
+                    let ui_state = UiState { elapsed, fps };
                     let full_output = self.egui_ctx.run(raw_input, |ctx| {
-                        egui::Window::new("Hello egui").show(ctx, |ui| {
-                            ui.label("Hello world");
-                            ui.horizontal(|ui| {
-                                ui.label(format!("Running for {:.2?}", elapsed));
-                                ui.label(format!("FPS: {:.0}", fps));
-                            });
-                        });
+                        ui::show(ctx, &ui_state);
                     });
                     egui_state.handle_platform_output(window, full_output.platform_output);
 
