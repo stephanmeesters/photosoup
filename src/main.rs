@@ -26,6 +26,7 @@ struct App {
     egui_ctx: egui::Context,
     egui_state: Option<EguiWinitState>,
     start_time: Option<Instant>,
+    last_frame_time: Option<Instant>,
 }
 
 impl ApplicationHandler for App {
@@ -51,6 +52,7 @@ impl ApplicationHandler for App {
         );
 
         self.start_time = Some(Instant::now());
+        self.last_frame_time = None;
         self.renderer = Some(renderer);
         self.egui_state = Some(egui_state);
         self.window = Some(window);
@@ -86,12 +88,26 @@ impl ApplicationHandler for App {
                     self.egui_state.as_mut(),
                     self.start_time,
                 ) {
-                    let elapsed = Instant::now().saturating_duration_since(start_time);
+                    let now = Instant::now();
+                    let frame_dt = self
+                        .last_frame_time
+                        .replace(now)
+                        .map(|previous| now.saturating_duration_since(previous))
+                        .unwrap_or_default();
+                    let fps = if frame_dt.is_zero() {
+                        0.0
+                    } else {
+                        1.0 / frame_dt.as_secs_f32()
+                    };
+                    let elapsed = now.saturating_duration_since(start_time);
                     let raw_input = egui_state.take_egui_input(window);
                     let full_output = self.egui_ctx.run(raw_input, |ctx| {
                         egui::Window::new("Hello egui").show(ctx, |ui| {
                             ui.label("Hello world");
-                            ui.label(format!("Running for {:.2?}", elapsed));
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Running for {:.2?}", elapsed));
+                                ui.label(format!("FPS: {:.1}", fps));
+                            });
                         });
                     });
                     egui_state.handle_platform_output(window, full_output.platform_output);
