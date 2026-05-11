@@ -1,15 +1,19 @@
 mod compute_circle_pipeline;
 mod compute_target;
 mod egui_pipeline;
+mod pipeline;
 mod triangle_pipeline;
 
 use ash::{khr, vk};
-use compute_circle_pipeline::ComputeCirclePipeline;
-use compute_target::ComputeTargets;
+use compute_circle_pipeline::ComputeCirclePass;
 use egui_pipeline::EguiPipeline;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use pipeline::{
+    FrameBeginContext, FrameContext, FrameFinishContext, RenderPassContext, Pipeline,
+    SwapchainContext,
+};
 use std::{ffi::CString, os::raw::c_char};
-use triangle_pipeline::TrianglePipeline;
+use triangle_pipeline::TrianglePass;
 use winit::window::Window;
 
 pub(super) const MAX_FRAMES_IN_FLIGHT: usize = 2;
@@ -32,10 +36,7 @@ pub struct Renderer {
     swapchain_format: vk::Format,
     swapchain_extent: vk::Extent2D,
     render_pass: vk::RenderPass,
-    compute_circle_pipeline: ComputeCirclePipeline,
-    compute_targets: Option<ComputeTargets>,
-    triangle_pipeline: Option<TrianglePipeline>,
-    egui_pipeline: EguiPipeline,
+    pipelines: Vec<Box<dyn Pipeline>>,
     framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -133,7 +134,7 @@ impl Renderer {
         let present_queue = unsafe { device.get_device_queue(queue_families.present_family, 0) };
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
 
-        let compute_circle_pipeline = ComputeCirclePipeline::new(&device)
+        let compute_circle_pass = ComputeCirclePass::new(&device)
             .map_err(|e| format!("create_compute_circle_pipeline: {e}"))?;
         let egui_pipeline = EguiPipeline::new(
             &instance,
@@ -142,6 +143,11 @@ impl Renderer {
             vk::RenderPass::null(),
         )
         .map_err(|e| format!("create_egui_pipeline: {e}"))?;
+        let pipelines: Vec<Box<dyn Pipeline>> = vec![
+            Box::new(compute_circle_pass),
+            Box::new(TrianglePass::default()),
+            Box::new(egui_pipeline),
+        ];
 
         let mut renderer = Self {
             _entry: entry,
@@ -161,10 +167,7 @@ impl Renderer {
             swapchain_format: vk::Format::UNDEFINED,
             swapchain_extent: vk::Extent2D::default(),
             render_pass: vk::RenderPass::null(),
-            compute_circle_pipeline,
-            compute_targets: None,
-            triangle_pipeline: None,
-            egui_pipeline,
+            pipelines,
             framebuffers: Vec::new(),
             command_pool: vk::CommandPool::null(),
             command_buffers: Vec::new(),
@@ -181,9 +184,6 @@ impl Renderer {
             height: size.height,
         })?;
         renderer.create_render_resources()?;
-        renderer
-            .egui_pipeline
-            .set_render_pass(renderer.render_pass)?;
         renderer.create_sync_objects()?;
         Ok(renderer)
     }
@@ -208,9 +208,6 @@ impl Renderer {
             eprintln!("{err}");
             return;
         }
-        if let Err(err) = self.egui_pipeline.set_render_pass(self.render_pass) {
-            eprintln!("set_egui_render_pass: {err:?}");
-        }
     }
 
     pub fn draw_frame(&mut self, egui_frame: Option<EguiFrame>) -> Result<(), RendererError> {
@@ -224,12 +221,15 @@ impl Renderer {
                 .map_err(|e| RendererError::Fatal(format!("reset_fences: {e:?}")))?;
         }
 
-        self.egui_pipeline.begin_frame(
-            self.current_frame,
-            self.graphics_queue,
-            self.command_pool,
-            egui_frame.as_ref(),
-        )?;
+        let begin_context = FrameBeginContext {
+            frame_index: self.current_frame,
+            graphics_queue: self.graphics_queue,
+            command_pool: self.command_pool,
+            egui_frame: egui_frame.as_ref(),
+        };
+        for pipeline in &mut self.pipelines {
+            pipeline.begin_frame(&begin_context)?;
+        }
 
         let (image_index, acquire_suboptimal) = unsafe {
             self.swapchain_loader.acquire_next_image(
@@ -281,8 +281,12 @@ impl Renderer {
                 .queue_present(self.present_queue, &present_info)
         };
 
-        if let Some(frame) = egui_frame {
-            self.egui_pipeline.finish_frame(self.current_frame, frame);
+        let finish_context = FrameFinishContext {
+            frame_index: self.current_frame,
+            egui_frame: egui_frame.as_ref(),
+        };
+        for pipeline in &mut self.pipelines {
+            pipeline.finish_frame(&finish_context);
         }
 
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
@@ -333,22 +337,15 @@ impl Renderer {
                 .map_err(|e| format!("begin_command_buffer: {e:?}"))?;
         }
 
-        let compute_targets = self
-            .compute_targets
-            .as_ref()
-            .ok_or_else(|| "missing compute targets".to_string())?;
-        self.compute_circle_pipeline.record(
-            &self.device,
+        let frame_context = FrameContext {
+            device: &self.device,
             command_buffer,
-            compute_targets,
-            image_index as usize,
-        )?;
-        compute_targets.record_copy_to_swapchain(
-            &self.device,
-            command_buffer,
-            image_index as usize,
-            self.swapchain_images[image_index as usize],
-        )?;
+            image_index: image_index as usize,
+            swapchain_image: self.swapchain_images[image_index as usize],
+        };
+        for pipeline in &mut self.pipelines {
+            pipeline.record_before_render_pass(&frame_context)?;
+        }
 
         unsafe {
             self.device.cmd_begin_render_pass(
@@ -356,13 +353,14 @@ impl Renderer {
                 &render_pass_info,
                 vk::SubpassContents::INLINE,
             );
-            if let Some(triangle_pipeline) = self.triangle_pipeline.as_ref() {
-                triangle_pipeline.record(&self.device, command_buffer);
-            }
-
-            if let Some(frame) = egui_frame {
-                self.egui_pipeline
-                    .record(command_buffer, self.swapchain_extent, frame)?;
+            let render_pass_context = RenderPassContext {
+                device: &self.device,
+                command_buffer,
+                extent: self.swapchain_extent,
+                egui_frame,
+            };
+            for pipeline in &mut self.pipelines {
+                pipeline.record_render_pass(&render_pass_context)?;
             }
 
             self.device.cmd_end_render_pass(command_buffer);
@@ -477,21 +475,17 @@ impl Renderer {
     fn create_render_resources(&mut self) -> Result<(), String> {
         self.create_image_views()?;
         self.create_render_pass()?;
-        let compute_targets = ComputeTargets::new(
-            &self.instance,
-            &self.device,
-            self.physical_device,
-            self.swapchain_images.len(),
-            self.swapchain_extent,
-        )?;
-        self.compute_circle_pipeline
-            .recreate_descriptors(&self.device, &compute_targets)?;
-        self.compute_targets = Some(compute_targets);
-        self.triangle_pipeline = Some(TrianglePipeline::new(
-            &self.device,
-            self.render_pass,
-            self.swapchain_extent,
-        )?);
+        let swapchain_context = SwapchainContext {
+            instance: &self.instance,
+            device: &self.device,
+            physical_device: self.physical_device,
+            render_pass: self.render_pass,
+            swapchain_images: &self.swapchain_images,
+            extent: self.swapchain_extent,
+        };
+        for pipeline in &mut self.pipelines {
+            pipeline.on_swapchain_created(&swapchain_context)?;
+        }
         self.create_framebuffers()?;
         self.create_command_pool()?;
         self.create_command_buffers()?;
@@ -635,13 +629,8 @@ impl Renderer {
                     .free_command_buffers(self.command_pool, &self.command_buffers);
             }
             self.command_buffers.clear();
-            if let Some(mut triangle_pipeline) = self.triangle_pipeline.take() {
-                triangle_pipeline.destroy(&self.device);
-            }
-            self.compute_circle_pipeline
-                .destroy_descriptors(&self.device);
-            if let Some(compute_targets) = self.compute_targets.take() {
-                compute_targets.destroy(&self.device);
+            for pipeline in &mut self.pipelines {
+                pipeline.destroy_swapchain(&self.device);
             }
             if self.render_pass != vk::RenderPass::null() {
                 self.device.destroy_render_pass(self.render_pass, None);
@@ -674,7 +663,9 @@ impl Drop for Renderer {
             if self.command_pool != vk::CommandPool::null() {
                 self.device.destroy_command_pool(self.command_pool, None);
             }
-            self.compute_circle_pipeline.destroy(&self.device);
+            for pipeline in &mut self.pipelines {
+                pipeline.destroy(&self.device);
+            }
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);

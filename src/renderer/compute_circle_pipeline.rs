@@ -1,7 +1,66 @@
 use ash::vk;
 use std::ffi::CString;
 
-use super::compute_target::ComputeTargets;
+use super::{
+    compute_target::ComputeTargets,
+    pipeline::{FrameContext, Pipeline, SwapchainContext},
+};
+
+pub struct ComputeCirclePass {
+    pipeline: ComputeCirclePipeline,
+    targets: Option<ComputeTargets>,
+}
+
+impl ComputeCirclePass {
+    pub fn new(device: &ash::Device) -> Result<Self, String> {
+        Ok(Self {
+            pipeline: ComputeCirclePipeline::new(device)?,
+            targets: None,
+        })
+    }
+}
+
+impl Pipeline for ComputeCirclePass {
+    fn on_swapchain_created(&mut self, ctx: &SwapchainContext<'_>) -> Result<(), String> {
+        let targets = ComputeTargets::new(
+            ctx.instance,
+            ctx.device,
+            ctx.physical_device,
+            ctx.swapchain_images.len(),
+            ctx.extent,
+        )?;
+        self.pipeline.recreate_descriptors(ctx.device, &targets)?;
+        self.targets = Some(targets);
+        Ok(())
+    }
+
+    fn destroy_swapchain(&mut self, device: &ash::Device) {
+        self.pipeline.destroy_descriptors(device);
+        if let Some(targets) = self.targets.take() {
+            targets.destroy(device);
+        }
+    }
+
+    fn record_before_render_pass(&mut self, ctx: &FrameContext<'_>) -> Result<(), String> {
+        let targets = self
+            .targets
+            .as_ref()
+            .ok_or_else(|| "missing compute targets".to_string())?;
+        self.pipeline
+            .record(ctx.device, ctx.command_buffer, targets, ctx.image_index)?;
+        targets.record_copy_to_swapchain(
+            ctx.device,
+            ctx.command_buffer,
+            ctx.image_index,
+            ctx.swapchain_image,
+        )
+    }
+
+    fn destroy(&mut self, device: &ash::Device) {
+        self.destroy_swapchain(device);
+        self.pipeline.destroy(device);
+    }
+}
 
 pub struct ComputeCirclePipeline {
     descriptor_set_layout: vk::DescriptorSetLayout,

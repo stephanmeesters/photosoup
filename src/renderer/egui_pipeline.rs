@@ -1,4 +1,9 @@
-use super::{EguiFrame, RendererError, MAX_FRAMES_IN_FLIGHT};
+use super::{
+    pipeline::{
+        FrameBeginContext, FrameFinishContext, RenderPassContext, Pipeline, SwapchainContext,
+    },
+    EguiFrame, RendererError, MAX_FRAMES_IN_FLIGHT,
+};
 use ash::vk;
 use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer};
 
@@ -77,8 +82,34 @@ impl EguiPipeline {
             )
             .map_err(|e| format!("egui cmd_draw: {e:?}"))
     }
+}
 
-    pub fn finish_frame(&mut self, frame_index: usize, frame: EguiFrame) {
-        self.pending_free[frame_index] = frame.textures_delta.free;
+impl Pipeline for EguiPipeline {
+    fn on_swapchain_created(&mut self, ctx: &SwapchainContext<'_>) -> Result<(), String> {
+        self.set_render_pass(ctx.render_pass)
     }
+
+    fn begin_frame(&mut self, ctx: &FrameBeginContext<'_>) -> Result<(), RendererError> {
+        self.begin_frame(
+            ctx.frame_index,
+            ctx.graphics_queue,
+            ctx.command_pool,
+            ctx.egui_frame,
+        )
+    }
+
+    fn record_render_pass(&mut self, ctx: &RenderPassContext<'_>) -> Result<(), String> {
+        if let Some(frame) = ctx.egui_frame {
+            self.record(ctx.command_buffer, ctx.extent, frame)?;
+        }
+        Ok(())
+    }
+
+    fn finish_frame(&mut self, ctx: &FrameFinishContext<'_>) {
+        if let Some(frame) = ctx.egui_frame {
+            self.pending_free[ctx.frame_index] = frame.textures_delta.free.clone();
+        }
+    }
+
+    fn destroy(&mut self, _device: &ash::Device) {}
 }

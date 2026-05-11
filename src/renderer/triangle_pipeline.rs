@@ -1,6 +1,41 @@
 use ash::vk;
 use std::ffi::CString;
 
+use super::pipeline::{RenderPassContext, Pipeline, SwapchainContext};
+
+#[derive(Default)]
+pub struct TrianglePass {
+    pipeline: Option<TrianglePipeline>,
+}
+
+impl Pipeline for TrianglePass {
+    fn on_swapchain_created(&mut self, ctx: &SwapchainContext<'_>) -> Result<(), String> {
+        self.pipeline = Some(TrianglePipeline::new(
+            ctx.device,
+            ctx.render_pass,
+            ctx.extent,
+        )?);
+        Ok(())
+    }
+
+    fn destroy_swapchain(&mut self, device: &ash::Device) {
+        if let Some(mut pipeline) = self.pipeline.take() {
+            pipeline.destroy(device);
+        }
+    }
+
+    fn record_render_pass(&mut self, ctx: &RenderPassContext<'_>) -> Result<(), String> {
+        if let Some(pipeline) = self.pipeline.as_ref() {
+            pipeline.record(ctx.device, ctx.command_buffer);
+        }
+        Ok(())
+    }
+
+    fn destroy(&mut self, device: &ash::Device) {
+        self.destroy_swapchain(device);
+    }
+}
+
 pub struct TrianglePipeline {
     layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
