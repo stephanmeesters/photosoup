@@ -96,7 +96,7 @@ impl ApplicationHandler for App {
                             ui.label("Hello world");
                             ui.horizontal(|ui| {
                                 ui.label(format!("Running for {:.2?}", elapsed));
-                                ui.label(format!("FPS: {:.1}", fps));
+                                ui.label(format!("FPS: {:.0}", fps));
                             });
                         });
                     });

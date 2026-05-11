@@ -1,9 +1,11 @@
 mod compute_circle_pipeline;
+mod compute_target;
 mod egui_pipeline;
 mod triangle_pipeline;
 
 use ash::{khr, vk};
 use compute_circle_pipeline::ComputeCirclePipeline;
+use compute_target::ComputeTargets;
 use egui_pipeline::EguiPipeline;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{ffi::CString, os::raw::c_char};
@@ -31,6 +33,7 @@ pub struct Renderer {
     swapchain_extent: vk::Extent2D,
     render_pass: vk::RenderPass,
     compute_circle_pipeline: ComputeCirclePipeline,
+    compute_targets: Option<ComputeTargets>,
     triangle_pipeline: Option<TrianglePipeline>,
     egui_pipeline: EguiPipeline,
     framebuffers: Vec<vk::Framebuffer>,
@@ -159,6 +162,7 @@ impl Renderer {
             swapchain_extent: vk::Extent2D::default(),
             render_pass: vk::RenderPass::null(),
             compute_circle_pipeline,
+            compute_targets: None,
             triangle_pipeline: None,
             egui_pipeline,
             framebuffers: Vec::new(),
@@ -329,12 +333,21 @@ impl Renderer {
                 .map_err(|e| format!("begin_command_buffer: {e:?}"))?;
         }
 
+        let compute_targets = self
+            .compute_targets
+            .as_ref()
+            .ok_or_else(|| "missing compute targets".to_string())?;
         self.compute_circle_pipeline.record(
             &self.device,
             command_buffer,
-            self.swapchain_images[image_index as usize],
+            compute_targets,
             image_index as usize,
-            self.swapchain_extent,
+        )?;
+        compute_targets.record_copy_to_swapchain(
+            &self.device,
+            command_buffer,
+            image_index as usize,
+            self.swapchain_images[image_index as usize],
         )?;
 
         unsafe {
@@ -464,13 +477,16 @@ impl Renderer {
     fn create_render_resources(&mut self) -> Result<(), String> {
         self.create_image_views()?;
         self.create_render_pass()?;
-        self.compute_circle_pipeline.recreate_targets(
+        let compute_targets = ComputeTargets::new(
             &self.instance,
             &self.device,
             self.physical_device,
             self.swapchain_images.len(),
             self.swapchain_extent,
         )?;
+        self.compute_circle_pipeline
+            .recreate_descriptors(&self.device, &compute_targets)?;
+        self.compute_targets = Some(compute_targets);
         self.triangle_pipeline = Some(TrianglePipeline::new(
             &self.device,
             self.render_pass,
@@ -622,7 +638,11 @@ impl Renderer {
             if let Some(mut triangle_pipeline) = self.triangle_pipeline.take() {
                 triangle_pipeline.destroy(&self.device);
             }
-            self.compute_circle_pipeline.destroy_targets(&self.device);
+            self.compute_circle_pipeline
+                .destroy_descriptors(&self.device);
+            if let Some(compute_targets) = self.compute_targets.take() {
+                compute_targets.destroy(&self.device);
+            }
             if self.render_pass != vk::RenderPass::null() {
                 self.device.destroy_render_pass(self.render_pass, None);
                 self.render_pass = vk::RenderPass::null();
