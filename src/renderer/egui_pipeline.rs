@@ -1,8 +1,8 @@
 use super::{
     pipeline::{
-        FrameBeginContext, FrameFinishContext, RenderPassContext, Pipeline, SwapchainContext,
-    },
-    EguiFrame, RendererError, MAX_FRAMES_IN_FLIGHT,
+        FrameBeginContext, FrameFinishContext, Pipeline, RenderPassContext, SwapchainContext,
+    }
+    , RendererError, MAX_FRAMES_IN_FLIGHT,
 };
 use ash::vk;
 use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer};
@@ -37,20 +37,21 @@ impl EguiPipeline {
             pending_free: std::array::from_fn(|_| Vec::new()),
         })
     }
+}
 
-    pub fn set_render_pass(&mut self, render_pass: vk::RenderPass) -> Result<(), String> {
+impl Pipeline for EguiPipeline {
+    fn on_swapchain_created(&mut self, ctx: &SwapchainContext<'_>) -> Result<(), String> {
+        let render_pass = ctx.render_pass;
         self.renderer
             .set_render_pass(render_pass)
             .map_err(|e| format!("set_egui_render_pass: {e:?}"))
     }
 
-    pub fn begin_frame(
-        &mut self,
-        frame_index: usize,
-        queue: vk::Queue,
-        command_pool: vk::CommandPool,
-        frame: Option<&EguiFrame>,
-    ) -> Result<(), RendererError> {
+    fn begin_frame(&mut self, ctx: &FrameBeginContext<'_>) -> Result<(), RendererError> {
+        let frame_index = ctx.frame_index;
+        let queue = ctx.graphics_queue;
+        let command_pool = ctx.command_pool;
+        let frame = ctx.egui_frame;
         if !self.pending_free[frame_index].is_empty() {
             self.renderer
                 .free_textures(&self.pending_free[frame_index])
@@ -67,40 +68,18 @@ impl EguiPipeline {
         Ok(())
     }
 
-    pub fn record(
-        &mut self,
-        command_buffer: vk::CommandBuffer,
-        extent: vk::Extent2D,
-        frame: &EguiFrame,
-    ) -> Result<(), String> {
-        self.renderer
-            .cmd_draw(
-                command_buffer,
-                extent,
-                frame.pixels_per_point,
-                frame.clipped_primitives.as_slice(),
-            )
-            .map_err(|e| format!("egui cmd_draw: {e:?}"))
-    }
-}
-
-impl Pipeline for EguiPipeline {
-    fn on_swapchain_created(&mut self, ctx: &SwapchainContext<'_>) -> Result<(), String> {
-        self.set_render_pass(ctx.render_pass)
-    }
-
-    fn begin_frame(&mut self, ctx: &FrameBeginContext<'_>) -> Result<(), RendererError> {
-        self.begin_frame(
-            ctx.frame_index,
-            ctx.graphics_queue,
-            ctx.command_pool,
-            ctx.egui_frame,
-        )
-    }
-
     fn record_render_pass(&mut self, ctx: &RenderPassContext<'_>) -> Result<(), String> {
         if let Some(frame) = ctx.egui_frame {
-            self.record(ctx.command_buffer, ctx.extent, frame)?;
+            let command_buffer = ctx.command_buffer;
+            let extent = ctx.extent;
+            self.renderer
+                .cmd_draw(
+                    command_buffer,
+                    extent,
+                    frame.pixels_per_point,
+                    frame.clipped_primitives.as_slice(),
+                )
+                .map_err(|e| format!("egui cmd_draw: {e:?}"))?;
         }
         Ok(())
     }
