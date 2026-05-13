@@ -4,10 +4,8 @@ use std::ffi::CString;
 use super::{
     compute_target::ComputeTargets,
     pipeline::{FrameContext, Pipeline, SwapchainContext},
-    shader::{compute_group_size, create_shader_module, descriptor_set_layout_bindings},
+    shader::Shader,
 };
-
-const CIRCLE_COMP_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/circle.comp.spv"));
 
 pub struct ComputeCirclePass {
     pipeline: ComputeCirclePipeline,
@@ -76,9 +74,11 @@ pub struct ComputeCirclePipeline {
 
 impl ComputeCirclePipeline {
     pub fn new(device: &ash::Device) -> Result<Self, String> {
-        let (descriptor_set_layout, descriptor_bindings) = create_descriptor_set_layout(device)?;
+        let shader = Shader::load("shaders/circle.comp")?;
+        let (descriptor_set_layout, descriptor_bindings) =
+            create_descriptor_set_layout(device, &shader)?;
         let pipeline_layout = create_pipeline_layout(device, descriptor_set_layout)?;
-        let pipeline = create_pipeline(device, pipeline_layout)?;
+        let pipeline = create_pipeline(device, pipeline_layout, &shader)?;
 
         Ok(Self {
             descriptor_set_layout,
@@ -224,9 +224,9 @@ impl Drop for ComputeCirclePipeline {
 
 fn create_descriptor_set_layout(
     device: &ash::Device,
+    shader: &Shader,
 ) -> Result<(vk::DescriptorSetLayout, Vec<vk::DescriptorSetLayoutBinding<'static>>), String> {
-    let bindings =
-        descriptor_set_layout_bindings(CIRCLE_COMP_SPV, 0, vk::ShaderStageFlags::COMPUTE)?;
+    let bindings = shader.descriptor_set_layout_bindings(0, vk::ShaderStageFlags::COMPUTE)?;
     let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
 
     let layout = unsafe { device.create_descriptor_set_layout(&info, None) }
@@ -249,8 +249,10 @@ fn create_pipeline_layout(
 fn create_pipeline(
     device: &ash::Device,
     pipeline_layout: vk::PipelineLayout,
+    shader: &Shader,
 ) -> Result<vk::Pipeline, String> {
-    let group_size = compute_group_size(CIRCLE_COMP_SPV)?
+    let group_size = shader
+        .compute_group_size()?
         .ok_or_else(|| "circle compute shader is missing local size".to_string())?;
     if group_size != (16, 16, 1) {
         return Err(format!(
@@ -258,7 +260,7 @@ fn create_pipeline(
         ));
     }
 
-    let shader_module = create_shader_module(device, CIRCLE_COMP_SPV)?;
+    let shader_module = shader.module(device)?;
     let entry_name = CString::new("main").unwrap();
     let stage = vk::PipelineShaderStageCreateInfo::default()
         .module(shader_module)

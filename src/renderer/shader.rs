@@ -1,5 +1,48 @@
 use ash::vk;
 use rspirv_reflect::{BindingCount, DescriptorType, Reflection};
+use std::path::Path;
+
+include!(concat!(env!("OUT_DIR"), "/shader_index.rs"));
+
+pub struct Shader {
+    spirv: &'static [u8],
+}
+
+impl Shader {
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, String> {
+        let path = path.as_ref();
+        let path = normalize_path(path);
+        let spirv = SHADERS
+            .iter()
+            .find_map(|(shader_path, spirv)| (*shader_path == path).then_some(*spirv))
+            .ok_or_else(|| format!("missing compiled shader artifact for {path}"))?;
+
+        Ok(Self { spirv })
+    }
+
+    pub fn module(&self, device: &ash::Device) -> Result<vk::ShaderModule, String> {
+        create_shader_module(device, self.spirv)
+    }
+
+    pub fn descriptor_set_layout_bindings(
+        &self,
+        set: u32,
+        stage_flags: vk::ShaderStageFlags,
+    ) -> Result<Vec<vk::DescriptorSetLayoutBinding<'static>>, String> {
+        descriptor_set_layout_bindings(self.spirv, set, stage_flags)
+    }
+
+    pub fn compute_group_size(&self) -> Result<Option<(u32, u32, u32)>, String> {
+        compute_group_size(self.spirv)
+    }
+}
+
+fn normalize_path(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
 
 pub fn create_shader_module(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule, String> {
     let words = ash::util::read_spv(&mut std::io::Cursor::new(bytes))

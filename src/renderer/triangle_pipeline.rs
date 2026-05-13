@@ -3,7 +3,7 @@ use std::ffi::CString;
 
 use super::{
     pipeline::{RenderPassContext, Pipeline, SwapchainContext},
-    shader::create_shader_module,
+    shader::Shader,
 };
 
 #[repr(C)]
@@ -78,11 +78,11 @@ impl TrianglePipeline {
         render_pass: vk::RenderPass,
         extent: vk::Extent2D,
     ) -> Result<Self, String> {
-        let vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/triangle.vert.spv"));
-        let frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/triangle.frag.spv"));
+        let vert_shader = Shader::load("shaders/triangle.vert")?;
+        let frag_shader = Shader::load("shaders/triangle.frag")?;
 
-        let vert_shader_module = create_shader_module(device, vert_spv)?;
-        let frag_shader_module = create_shader_module(device, frag_spv).map_err(|e| {
+        let vert_shader_module = vert_shader.module(device)?;
+        let frag_shader_module = frag_shader.module(device).map_err(|e| {
             unsafe {
                 device.destroy_shader_module(vert_shader_module, None);
             }
