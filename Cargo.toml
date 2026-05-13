@@ -3,6 +3,7 @@ name = "photosoup"
 version = "0.1.0"
 edition = "2021"
 build = "build.rs"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 ash = "0.38"
