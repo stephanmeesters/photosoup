@@ -4,7 +4,10 @@ use std::ffi::CString;
 use super::{
     compute_target::ComputeTargets,
     pipeline::{FrameContext, Pipeline, SwapchainContext},
+    shader::{compute_group_size, create_shader_module, descriptor_set_layout_bindings},
 };
+
+const CIRCLE_COMP_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/circle.comp.spv"));
 
 pub struct ComputeCirclePass {
     pipeline: ComputeCirclePipeline,
@@ -64,6 +67,7 @@ impl Pipeline for ComputeCirclePass {
 
 pub struct ComputeCirclePipeline {
     descriptor_set_layout: vk::DescriptorSetLayout,
+    descriptor_bindings: Vec<vk::DescriptorSetLayoutBinding<'static>>,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     descriptor_pool: vk::DescriptorPool,
@@ -72,12 +76,13 @@ pub struct ComputeCirclePipeline {
 
 impl ComputeCirclePipeline {
     pub fn new(device: &ash::Device) -> Result<Self, String> {
-        let descriptor_set_layout = create_descriptor_set_layout(device)?;
+        let (descriptor_set_layout, descriptor_bindings) = create_descriptor_set_layout(device)?;
         let pipeline_layout = create_pipeline_layout(device, descriptor_set_layout)?;
         let pipeline = create_pipeline(device, pipeline_layout)?;
 
         Ok(Self {
             descriptor_set_layout,
+            descriptor_bindings,
             pipeline_layout,
             pipeline,
             descriptor_pool: vk::DescriptorPool::null(),
@@ -92,12 +97,18 @@ impl ComputeCirclePipeline {
     ) -> Result<(), String> {
         self.destroy_descriptors(device);
 
-        let pool_size = vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::STORAGE_IMAGE)
-            .descriptor_count(targets.len() as u32);
+        let pool_sizes = self
+            .descriptor_bindings
+            .iter()
+            .map(|binding| {
+                vk::DescriptorPoolSize::default()
+                    .ty(binding.descriptor_type)
+                    .descriptor_count(binding.descriptor_count * targets.len() as u32)
+            })
+            .collect::<Vec<_>>();
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .max_sets(targets.len() as u32)
-            .pool_sizes(std::slice::from_ref(&pool_size));
+            .pool_sizes(&pool_sizes);
 
         self.descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None) }
             .map_err(|e| format!("create_compute_descriptor_pool: {e:?}"))?;
@@ -109,15 +120,20 @@ impl ComputeCirclePipeline {
         self.descriptor_sets = unsafe { device.allocate_descriptor_sets(&alloc_info) }
             .map_err(|e| format!("allocate_compute_descriptor_sets: {e:?}"))?;
 
-        for (&descriptor_set, image_view) in self.descriptor_sets.iter().zip(targets.image_views())
-        {
+        let image_binding = self
+            .descriptor_bindings
+            .iter()
+            .find(|binding| binding.descriptor_type == vk::DescriptorType::STORAGE_IMAGE)
+            .ok_or_else(|| "circle compute shader has no reflected storage image".to_string())?;
+
+        for (&descriptor_set, image_view) in self.descriptor_sets.iter().zip(targets.image_views()) {
             let image_info = vk::DescriptorImageInfo::default()
                 .image_view(image_view)
                 .image_layout(vk::ImageLayout::GENERAL);
             let write = vk::WriteDescriptorSet::default()
                 .dst_set(descriptor_set)
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .dst_binding(image_binding.binding)
+                .descriptor_type(image_binding.descriptor_type)
                 .image_info(std::slice::from_ref(&image_info));
 
             unsafe {
@@ -206,17 +222,17 @@ impl Drop for ComputeCirclePipeline {
     }
 }
 
-fn create_descriptor_set_layout(device: &ash::Device) -> Result<vk::DescriptorSetLayout, String> {
-    let binding = vk::DescriptorSetLayoutBinding::default()
-        .binding(0)
-        .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-        .descriptor_count(1)
-        .stage_flags(vk::ShaderStageFlags::COMPUTE);
-    let info =
-        vk::DescriptorSetLayoutCreateInfo::default().bindings(std::slice::from_ref(&binding));
+fn create_descriptor_set_layout(
+    device: &ash::Device,
+) -> Result<(vk::DescriptorSetLayout, Vec<vk::DescriptorSetLayoutBinding<'static>>), String> {
+    let bindings =
+        descriptor_set_layout_bindings(CIRCLE_COMP_SPV, 0, vk::ShaderStageFlags::COMPUTE)?;
+    let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
 
-    unsafe { device.create_descriptor_set_layout(&info, None) }
-        .map_err(|e| format!("create_compute_descriptor_set_layout: {e:?}"))
+    let layout = unsafe { device.create_descriptor_set_layout(&info, None) }
+        .map_err(|e| format!("create_compute_descriptor_set_layout: {e:?}"))?;
+
+    Ok((layout, bindings))
 }
 
 fn create_pipeline_layout(
@@ -234,10 +250,15 @@ fn create_pipeline(
     device: &ash::Device,
     pipeline_layout: vk::PipelineLayout,
 ) -> Result<vk::Pipeline, String> {
-    let shader_module = create_shader_module(
-        device,
-        include_bytes!(concat!(env!("OUT_DIR"), "/circle.comp.spv")),
-    )?;
+    let group_size = compute_group_size(CIRCLE_COMP_SPV)?
+        .ok_or_else(|| "circle compute shader is missing local size".to_string())?;
+    if group_size != (16, 16, 1) {
+        return Err(format!(
+            "circle compute shader local size must be (16, 16, 1), got {group_size:?}"
+        ));
+    }
+
+    let shader_module = create_shader_module(device, CIRCLE_COMP_SPV)?;
     let entry_name = CString::new("main").unwrap();
     let stage = vk::PipelineShaderStageCreateInfo::default()
         .module(shader_module)
@@ -264,11 +285,3 @@ fn create_pipeline(
     result
 }
 
-fn create_shader_module(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule, String> {
-    let words = ash::util::read_spv(&mut std::io::Cursor::new(bytes))
-        .map_err(|e| format!("read_spv: {e:?}"))?;
-    let info = vk::ShaderModuleCreateInfo::default().code(&words);
-
-    unsafe { device.create_shader_module(&info, None) }
-        .map_err(|e| format!("create_compute_shader_module: {e:?}"))
-}

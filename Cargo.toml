@@ -11,6 +11,7 @@ egui = "0.31"
 egui-winit = "0.31"
 egui-ash-renderer = "0.8"
 raw-window-handle = "0.6"
+rspirv-reflect = "0.9"
 winit = "0.30"
 
 [build-dependencies]

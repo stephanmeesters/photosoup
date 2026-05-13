@@ -2,6 +2,7 @@ mod compute_circle_pipeline;
 mod compute_target;
 mod egui_pipeline;
 mod pipeline;
+mod shader;
 mod triangle_pipeline;
 
 use ash::{khr, vk};
