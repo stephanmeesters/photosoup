@@ -69,7 +69,11 @@ impl ApplicationHandler for App {
         }
 
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.renderer.take();
+                self.egui_state.take();
+                event_loop.exit();
+            }
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size.width, size.height);
@@ -129,5 +133,11 @@ impl ApplicationHandler for App {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        self.renderer.take();
     }
 }

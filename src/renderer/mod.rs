@@ -697,6 +697,7 @@ impl Drop for Renderer {
             for pipeline in &mut self.pipelines {
                 pipeline.destroy(&self.device);
             }
+            self.pipelines.clear();
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
