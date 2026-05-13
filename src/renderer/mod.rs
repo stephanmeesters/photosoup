@@ -135,21 +135,6 @@ impl Renderer {
         let present_queue = unsafe { device.get_device_queue(queue_families.present_family, 0) };
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
 
-        let compute_circle_pass = ComputeCirclePass::new(&device)
-            .map_err(|e| format!("create_compute_circle_pipeline: {e}"))?;
-        let egui_pipeline = EguiPipeline::new(
-            &instance,
-            physical_device,
-            device.clone(),
-            vk::RenderPass::null(),
-        )
-        .map_err(|e| format!("create_egui_pipeline: {e}"))?;
-        let pipelines: Vec<Box<dyn Pipeline>> = vec![
-            Box::new(compute_circle_pass),
-            Box::new(TrianglePass::default()),
-            Box::new(egui_pipeline),
-        ];
-
         let mut renderer = Self {
             _entry: entry,
             instance,
@@ -168,7 +153,7 @@ impl Renderer {
             swapchain_format: vk::Format::UNDEFINED,
             swapchain_extent: vk::Extent2D::default(),
             render_pass: vk::RenderPass::null(),
-            pipelines,
+            pipelines: Vec::new(),
             framebuffers: Vec::new(),
             command_pool: vk::CommandPool::null(),
             command_buffers: Vec::new(),
@@ -184,7 +169,10 @@ impl Renderer {
             width: size.width,
             height: size.height,
         })?;
-        renderer.create_render_resources()?;
+        renderer.create_image_views()?;
+        renderer.create_render_pass()?;
+        renderer.create_pipelines()?;
+        renderer.create_swapchain_dependent_resources()?;
         renderer.create_sync_objects()?;
         Ok(renderer)
     }
@@ -217,9 +205,6 @@ impl Renderer {
             self.device
                 .wait_for_fences(&[fence], true, u64::MAX)
                 .map_err(|e| RendererError::Fatal(format!("wait_for_fences: {e:?}")))?;
-            self.device
-                .reset_fences(&[fence])
-                .map_err(|e| RendererError::Fatal(format!("reset_fences: {e:?}")))?;
         }
 
         let begin_context = FrameBeginContext {
@@ -254,8 +239,14 @@ impl Renderer {
         self.record_command_buffer(command_buffer, image_index, egui_frame.as_ref())
             .map_err(RendererError::Fatal)?;
 
+        unsafe {
+            self.device
+                .reset_fences(&[fence])
+                .map_err(|e| RendererError::Fatal(format!("reset_fences: {e:?}")))?;
+        }
+
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
-        let signal_semaphores = [self.render_finished_semaphores[self.current_frame]];
+        let signal_semaphores = [self.render_finished_semaphores[image_index as usize]];
         let wait_stages = [vk::PipelineStageFlags::COMPUTE_SHADER];
         let command_buffers = [command_buffer];
         let submit_info = vk::SubmitInfo::default()
@@ -476,6 +467,28 @@ impl Renderer {
     fn create_render_resources(&mut self) -> Result<(), String> {
         self.create_image_views()?;
         self.create_render_pass()?;
+        self.create_swapchain_dependent_resources()
+    }
+
+    fn create_pipelines(&mut self) -> Result<(), String> {
+        let compute_circle_pass = ComputeCirclePass::new(&self.device)
+            .map_err(|e| format!("create_compute_circle_pipeline: {e}"))?;
+        let egui_pipeline = EguiPipeline::new(
+            &self.instance,
+            self.physical_device,
+            self.device.clone(),
+            self.render_pass,
+        )
+        .map_err(|e| format!("create_egui_pipeline: {e}"))?;
+        self.pipelines = vec![
+            Box::new(compute_circle_pass),
+            Box::new(TrianglePass::default()),
+            Box::new(egui_pipeline),
+        ];
+        Ok(())
+    }
+
+    fn create_swapchain_dependent_resources(&mut self) -> Result<(), String> {
         let swapchain_context = SwapchainContext {
             instance: &self.instance,
             device: &self.device,
@@ -490,6 +503,7 @@ impl Renderer {
         self.create_framebuffers()?;
         self.create_command_pool()?;
         self.create_command_buffers()?;
+        self.create_render_finished_semaphores()?;
         Ok(())
     }
 
@@ -600,15 +614,10 @@ impl Renderer {
         let semaphore_info = vk::SemaphoreCreateInfo::default();
         let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
         self.image_available_semaphores.clear();
-        self.render_finished_semaphores.clear();
         self.in_flight_fences.clear();
 
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             self.image_available_semaphores.push(
-                unsafe { self.device.create_semaphore(&semaphore_info, None) }
-                    .map_err(|e| format!("create_semaphore: {e:?}"))?,
-            );
-            self.render_finished_semaphores.push(
                 unsafe { self.device.create_semaphore(&semaphore_info, None) }
                     .map_err(|e| format!("create_semaphore: {e:?}"))?,
             );
@@ -620,8 +629,30 @@ impl Renderer {
         Ok(())
     }
 
+    fn create_render_finished_semaphores(&mut self) -> Result<(), String> {
+        let semaphore_info = vk::SemaphoreCreateInfo::default();
+        self.destroy_render_finished_semaphores();
+
+        for _ in 0..self.swapchain_images.len() {
+            self.render_finished_semaphores.push(
+                unsafe { self.device.create_semaphore(&semaphore_info, None) }
+                    .map_err(|e| format!("create_render_finished_semaphore: {e:?}"))?,
+            );
+        }
+        Ok(())
+    }
+
+    fn destroy_render_finished_semaphores(&mut self) {
+        unsafe {
+            for semaphore in self.render_finished_semaphores.drain(..) {
+                self.device.destroy_semaphore(semaphore, None);
+            }
+        }
+    }
+
     fn destroy_swapchain_resources(&mut self) {
         unsafe {
+            self.destroy_render_finished_semaphores();
             for framebuffer in self.framebuffers.drain(..) {
                 self.device.destroy_framebuffer(framebuffer, None);
             }
@@ -654,12 +685,11 @@ impl Drop for Renderer {
         unsafe {
             let _ = self.device.device_wait_idle();
             self.destroy_swapchain_resources();
-            for i in 0..self.image_available_semaphores.len() {
-                self.device
-                    .destroy_semaphore(self.image_available_semaphores[i], None);
-                self.device
-                    .destroy_semaphore(self.render_finished_semaphores[i], None);
-                self.device.destroy_fence(self.in_flight_fences[i], None);
+            for semaphore in self.image_available_semaphores.drain(..) {
+                self.device.destroy_semaphore(semaphore, None);
+            }
+            for fence in self.in_flight_fences.drain(..) {
+                self.device.destroy_fence(fence, None);
             }
             if self.command_pool != vk::CommandPool::null() {
                 self.device.destroy_command_pool(self.command_pool, None);
