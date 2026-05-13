@@ -1,8 +1,8 @@
 use super::{
     pipeline::{
         FrameBeginContext, FrameFinishContext, Pipeline, RenderPassContext, SwapchainContext,
-    }
-    , RendererError, MAX_FRAMES_IN_FLIGHT,
+    },
+    RendererError, MAX_FRAMES_IN_FLIGHT,
 };
 use ash::vk;
 use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer};

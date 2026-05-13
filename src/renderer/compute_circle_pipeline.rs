@@ -126,7 +126,8 @@ impl ComputeCirclePipeline {
             .find(|binding| binding.descriptor_type == vk::DescriptorType::STORAGE_IMAGE)
             .ok_or_else(|| "circle compute shader has no reflected storage image".to_string())?;
 
-        for (&descriptor_set, image_view) in self.descriptor_sets.iter().zip(targets.image_views()) {
+        for (&descriptor_set, image_view) in self.descriptor_sets.iter().zip(targets.image_views())
+        {
             let image_info = vk::DescriptorImageInfo::default()
                 .image_view(image_view)
                 .image_layout(vk::ImageLayout::GENERAL);
@@ -225,7 +226,13 @@ impl Drop for ComputeCirclePipeline {
 fn create_descriptor_set_layout(
     device: &ash::Device,
     shader: &Shader,
-) -> Result<(vk::DescriptorSetLayout, Vec<vk::DescriptorSetLayoutBinding<'static>>), String> {
+) -> Result<
+    (
+        vk::DescriptorSetLayout,
+        Vec<vk::DescriptorSetLayoutBinding<'static>>,
+    ),
+    String,
+> {
     let bindings = shader.descriptor_set_layout_bindings(0, vk::ShaderStageFlags::COMPUTE)?;
     let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
 
@@ -286,4 +293,3 @@ fn create_pipeline(
 
     result
 }
-

@@ -8,11 +8,11 @@ mod triangle_pipeline;
 use ash::{khr, vk};
 use compute_circle_pipeline::ComputeCirclePass;
 use egui_pipeline::EguiPipeline;
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use pipeline::{
-    FrameBeginContext, FrameContext, FrameFinishContext, RenderPassContext, Pipeline,
+    FrameBeginContext, FrameContext, FrameFinishContext, Pipeline, RenderPassContext,
     SwapchainContext,
 };
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{ffi::CString, os::raw::c_char};
 use triangle_pipeline::TrianglePass;
 use winit::window::Window;

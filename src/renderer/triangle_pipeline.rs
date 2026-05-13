@@ -2,7 +2,7 @@ use ash::vk;
 use std::ffi::CString;
 
 use super::{
-    pipeline::{RenderPassContext, Pipeline, SwapchainContext},
+    pipeline::{Pipeline, RenderPassContext, SwapchainContext},
     shader::Shader,
 };
 
@@ -314,13 +314,11 @@ fn create_vertex_buffer(
     })?;
 
     unsafe {
-        device
-            .bind_buffer_memory(buffer, memory, 0)
-            .map_err(|e| {
-                device.free_memory(memory, None);
-                device.destroy_buffer(buffer, None);
-                format!("bind_triangle_vertex_buffer_memory: {e:?}")
-            })?;
+        device.bind_buffer_memory(buffer, memory, 0).map_err(|e| {
+            device.free_memory(memory, None);
+            device.destroy_buffer(buffer, None);
+            format!("bind_triangle_vertex_buffer_memory: {e:?}")
+        })?;
         let data = device
             .map_memory(memory, 0, buffer_size, vk::MemoryMapFlags::empty())
             .map_err(|e| {

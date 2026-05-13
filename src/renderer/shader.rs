@@ -44,7 +44,10 @@ fn normalize_path(path: &Path) -> String {
         .join("/")
 }
 
-pub fn create_shader_module(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule, String> {
+pub fn create_shader_module(
+    device: &ash::Device,
+    bytes: &[u8],
+) -> Result<vk::ShaderModule, String> {
     let words = ash::util::read_spv(&mut std::io::Cursor::new(bytes))
         .map_err(|e| format!("read_spv: {e:?}"))?;
     let info = vk::ShaderModuleCreateInfo::default().code(&words);
