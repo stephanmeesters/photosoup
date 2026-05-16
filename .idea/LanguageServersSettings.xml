@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="LanguageServerSettingsState">
+    <state>
+      <map>
+        <entry key="2a77b207-eead-49f9-a0f8-a2df926d15d7">
+          <value>
+            <LanguageServerDefinitionSettings>
+              <option name="debugPort" value="" />
+              <option name="errorReportingKind" value="as_notification" />
+              <option name="serverTrace" value="off" />
+            </LanguageServerDefinitionSettings>
+          </value>
+        </entry>
+      </map>
+    </state>
+  </component>
+</project>
