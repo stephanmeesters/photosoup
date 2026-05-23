@@ -70,7 +70,7 @@ pub fn descriptor_set_layout_bindings(
     stage_flags: vk::ShaderStageFlags,
 ) -> Result<Vec<vk::DescriptorSetLayoutBinding<'static>>, String> {
     // Reflection reads the compiled shader and tells us which descriptor slots
-    // it declares, so Rust and GLSL stay in sync.
+    // it declares, so Rust and HLSL stay in sync.
     let reflection = Reflection::new_from_spirv(bytes)
         .map_err(|e| format!("reflect_shader_descriptors: {e}"))?;
     let descriptor_sets = reflection
@@ -84,7 +84,7 @@ pub fn descriptor_set_layout_bindings(
         .iter()
         .map(|(&binding, info)| {
             Ok(vk::DescriptorSetLayoutBinding::default()
-                // Binding number must match layout(binding = N) in GLSL.
+                // Binding number must match register(uN, spaceM) in HLSL.
                 .binding(binding)
                 // Descriptor type tells Vulkan whether the shader expects an image,
                 // sampler, uniform buffer, storage buffer, etc.

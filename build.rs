@@ -12,6 +12,7 @@ fn main() {
 
     let compiler = shaderc::Compiler::new().expect("shaderc compiler");
     let mut options = shaderc::CompileOptions::new().expect("shaderc options");
+    options.set_source_language(shaderc::SourceLanguage::HLSL);
     options.set_target_env(
         shaderc::TargetEnv::Vulkan,
         shaderc::EnvVersion::Vulkan1_0 as u32,
@@ -57,10 +58,10 @@ fn discover_shaders_inner(dir: &Path, shaders: &mut Vec<PathBuf>) -> Result<(), 
 }
 
 fn shader_kind(path: &Path) -> Option<shaderc::ShaderKind> {
-    match path.extension().and_then(|extension| extension.to_str()) {
-        Some("vert") => Some(shaderc::ShaderKind::Vertex),
-        Some("frag") => Some(shaderc::ShaderKind::Fragment),
-        Some("comp") => Some(shaderc::ShaderKind::Compute),
+    match path.file_name().and_then(|file_name| file_name.to_str()) {
+        Some(file_name) if file_name.ends_with(".vert.hlsl") => Some(shaderc::ShaderKind::Vertex),
+        Some(file_name) if file_name.ends_with(".frag.hlsl") => Some(shaderc::ShaderKind::Fragment),
+        Some(file_name) if file_name.ends_with(".comp.hlsl") => Some(shaderc::ShaderKind::Compute),
         _ => None,
     }
 }
@@ -88,7 +89,7 @@ fn compile_shader(
 ) {
     let kind = shader_kind(source_path).unwrap_or_else(|| {
         panic!(
-            "unsupported shader extension for {}; expected .vert, .frag, or .comp",
+            "unsupported shader filename for {}; expected .vert.hlsl, .frag.hlsl, or .comp.hlsl",
             source_path.display()
         )
     });

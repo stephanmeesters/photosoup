@@ -9,9 +9,9 @@ use super::{
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct TriangleVertex {
-    // Matches location 0 in triangle.vert.
+    // Matches location 0 in triangle.vert.hlsl.
     position: [f32; 2],
-    // Matches location 1 in triangle.vert.
+    // Matches location 1 in triangle.vert.hlsl.
     color: [f32; 4],
 }
 
@@ -87,8 +87,8 @@ impl TrianglePipeline {
         color_attachment_format: vk::Format,
         extent: vk::Extent2D,
     ) -> Result<Self, String> {
-        let vert_shader = Shader::load("shaders/triangle.vert")?;
-        let frag_shader = Shader::load("shaders/triangle.frag")?;
+        let vert_shader = Shader::load("shaders/triangle.vert.hlsl")?;
+        let frag_shader = Shader::load("shaders/triangle.frag.hlsl")?;
 
         // Shader modules are temporary inputs to pipeline creation.
         let vert_shader_module = vert_shader.module(device)?;
@@ -139,7 +139,7 @@ impl TrianglePipeline {
     ) -> Result<Self, String> {
         let entry_name = CString::new("main").unwrap();
         // A graphics pipeline has one stage per shader. The entry name must match
-        // the GLSL function compiled into SPIR-V.
+        // the HLSL function compiled into SPIR-V.
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
                 .module(vert_shader_module)

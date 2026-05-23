@@ -840,9 +840,10 @@ fn physical_device_supports_required_capabilities(
         return Ok(false);
     }
 
-    // The compute pass writes an rgba8 storage image, then copies it to the swapchain.
+    // The HLSL compute pass writes packed RGBA bytes to an r32ui storage image,
+    // then copies the size-compatible pixels to the swapchain.
     let compute_target_format = unsafe {
-        instance.get_physical_device_format_properties(device, vk::Format::R8G8B8A8_UNORM)
+        instance.get_physical_device_format_properties(device, vk::Format::R32_UINT)
     };
     let required_format_features =
         vk::FormatFeatureFlags::STORAGE_IMAGE | vk::FormatFeatureFlags::TRANSFER_SRC;

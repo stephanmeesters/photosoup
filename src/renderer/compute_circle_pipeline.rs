@@ -90,9 +90,9 @@ pub struct ComputeCirclePipeline {
 
 impl ComputeCirclePipeline {
     pub fn new(device: &ash::Device) -> Result<Self, String> {
-        let shader = Shader::load("shaders/circle.comp")?;
+        let shader = Shader::load("shaders/circle.comp.hlsl")?;
         // Build the descriptor layout from SPIR-V reflection instead of manually
-        // duplicating layout(binding = ...) declarations in Rust.
+        // duplicating HLSL register bindings in Rust.
         let (descriptor_set_layout, descriptor_bindings) =
             create_descriptor_set_layout(device, &shader)?;
         let pipeline_layout = create_pipeline_layout(device, descriptor_set_layout)?;
@@ -296,7 +296,7 @@ fn create_pipeline(
     shader: &Shader,
 ) -> Result<vk::Pipeline, String> {
     // The Rust dispatch math assumes a 16x16x1 local size. Check the compiled
-    // shader so a GLSL edit cannot silently desync CPU and GPU assumptions.
+    // shader so an HLSL edit cannot silently desync CPU and GPU assumptions.
     let group_size = shader
         .compute_group_size()?
         .ok_or_else(|| "circle compute shader is missing local size".to_string())?;

@@ -171,7 +171,7 @@ impl ComputeTarget {
         // copy it into the swapchain after compute finishes.
         let image_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
-            .format(vk::Format::R8G8B8A8_UNORM)
+            .format(vk::Format::R32_UINT)
             .extent(vk::Extent3D {
                 width: extent.width,
                 height: extent.height,
@@ -213,7 +213,7 @@ impl ComputeTarget {
         let view_info = vk::ImageViewCreateInfo::default()
             .image(image)
             .view_type(vk::ImageViewType::TYPE_2D)
-            .format(vk::Format::R8G8B8A8_UNORM)
+            .format(vk::Format::R32_UINT)
             .subresource_range(color_subresource_range());
         let image_view = unsafe { device.create_image_view(&view_info, None) }
             .map_err(|e| format!("create_compute_target_image_view: {e:?}"))?;
