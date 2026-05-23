@@ -1,22 +1,16 @@
 use std::{
-    env, fs,
+    env, ffi::OsString, fs, process::Command,
     path::{Path, PathBuf},
 };
 
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
     println!("cargo:rerun-if-changed=shaders");
+    println!("cargo:rerun-if-env-changed=DXC");
 
     let shader_out_dir = out_dir.join("shaders");
     fs::create_dir_all(&shader_out_dir).expect("create shader output dir");
-
-    let compiler = shaderc::Compiler::new().expect("shaderc compiler");
-    let mut options = shaderc::CompileOptions::new().expect("shaderc options");
-    options.set_source_language(shaderc::SourceLanguage::HLSL);
-    options.set_target_env(
-        shaderc::TargetEnv::Vulkan,
-        shaderc::EnvVersion::Vulkan1_0 as u32,
-    );
+    let dxc = env::var_os("DXC").unwrap_or_else(|| OsString::from("dxc"));
 
     let shaders = discover_shaders(Path::new("shaders")).expect("discover shaders");
     let mut entries = Vec::new();
@@ -28,7 +22,7 @@ fn main() {
         }
         if shader_needs_compile(&shader, &output_path).expect("check shader artifact freshness") {
             println!("compiling shader {}", shader.display());
-            compile_shader(&compiler, &options, &shader, &output_path);
+            compile_shader(&dxc, &shader, &output_path);
         }
 
         entries.push((normalize_path(&shader), output_path));
@@ -50,18 +44,18 @@ fn discover_shaders_inner(dir: &Path, shaders: &mut Vec<PathBuf>) -> Result<(), 
         let path = entry.path();
         if path.is_dir() {
             discover_shaders_inner(&path, shaders)?;
-        } else if shader_kind(&path).is_some() {
+        } else if shader_profile(&path).is_some() {
             shaders.push(path);
         }
     }
     Ok(())
 }
 
-fn shader_kind(path: &Path) -> Option<shaderc::ShaderKind> {
+fn shader_profile(path: &Path) -> Option<&'static str> {
     match path.file_name().and_then(|file_name| file_name.to_str()) {
-        Some(file_name) if file_name.ends_with(".vert.hlsl") => Some(shaderc::ShaderKind::Vertex),
-        Some(file_name) if file_name.ends_with(".frag.hlsl") => Some(shaderc::ShaderKind::Fragment),
-        Some(file_name) if file_name.ends_with(".comp.hlsl") => Some(shaderc::ShaderKind::Compute),
+        Some(file_name) if file_name.ends_with(".vert.hlsl") => Some("vs_6_6"),
+        Some(file_name) if file_name.ends_with(".frag.hlsl") => Some("ps_6_6"),
+        Some(file_name) if file_name.ends_with(".cs.hlsl") => Some("cs_6_6"),
         _ => None,
     }
 }
@@ -81,29 +75,38 @@ fn shader_needs_compile(source_path: &Path, output_path: &Path) -> Result<bool, 
     Ok(source_modified > output_modified)
 }
 
-fn compile_shader(
-    compiler: &shaderc::Compiler,
-    options: &shaderc::CompileOptions<'_>,
-    source_path: &Path,
-    output_path: &Path,
-) {
-    let kind = shader_kind(source_path).unwrap_or_else(|| {
+fn compile_shader(dxc: &OsString, source_path: &Path, output_path: &Path) {
+    let profile = shader_profile(source_path).unwrap_or_else(|| {
         panic!(
-            "unsupported shader filename for {}; expected .vert.hlsl, .frag.hlsl, or .comp.hlsl",
+            "unsupported shader filename for {}; expected .vert.hlsl, .frag.hlsl, or .cs.hlsl",
             source_path.display()
         )
     });
-    let source = fs::read_to_string(source_path).expect("shader source");
-    let artifact = compiler
-        .compile_into_spirv(
-            &source,
-            kind,
-            &source_path.to_string_lossy(),
-            "main",
-            Some(options),
-        )
-        .unwrap_or_else(|err| panic!("{}: {err}", source_path.display()));
-    fs::write(output_path, artifact.as_binary_u8()).expect("write shader artifact");
+    let output = Command::new(dxc)
+        .arg("-spirv")
+        .arg("-T")
+        .arg(profile)
+        .arg("-E")
+        .arg("main")
+        .arg("-Fo")
+        .arg(output_path)
+        .arg(source_path)
+        .output()
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to run dxc for {}: {err}. Install dxc or set DXC to its path",
+                source_path.display()
+            )
+        });
+
+    if !output.status.success() {
+        panic!(
+            "dxc failed for {}\nstdout:\n{}\nstderr:\n{}",
+            source_path.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 fn normalize_path(path: &Path) -> String {

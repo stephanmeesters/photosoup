@@ -90,7 +90,7 @@ pub struct ComputeCirclePipeline {
 
 impl ComputeCirclePipeline {
     pub fn new(device: &ash::Device) -> Result<Self, String> {
-        let shader = Shader::load("shaders/circle.comp.hlsl")?;
+        let shader = Shader::load("shaders/circle.cs.hlsl")?;
         // Build the descriptor layout from SPIR-V reflection instead of manually
         // duplicating HLSL register bindings in Rust.
         let (descriptor_set_layout, descriptor_bindings) =

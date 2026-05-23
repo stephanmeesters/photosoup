@@ -15,5 +15,3 @@ raw-window-handle = "0.6"
 rspirv-reflect = "0.9"
 winit = "0.30"
 
-[build-dependencies]
-shaderc = "0.10"
