@@ -98,8 +98,7 @@ impl TrianglePipeline {
             }
             e
         })?;
-        let (vertex_buffer, vertex_buffer_memory) =
-            create_vertex_buffer(instance, device, physical_device)?;
+        let (vertex_buffer, vertex_buffer_memory) = create_vertex_buffer(instance, device, physical_device)?;
 
         // Build the final graphics pipeline using the shader modules and vertex buffer.
         let result = Self::create(
@@ -188,9 +187,7 @@ impl TrianglePipeline {
             .min_depth(0.0)
             .max_depth(1.0);
         // Scissor clips rendering to the whole framebuffer.
-        let scissor = vk::Rect2D::default()
-            .offset(vk::Offset2D { x: 0, y: 0 })
-            .extent(extent);
+        let scissor = vk::Rect2D::default().offset(vk::Offset2D { x: 0, y: 0 }).extent(extent);
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .viewports(std::slice::from_ref(&viewport))
             .scissors(std::slice::from_ref(&scissor));
@@ -229,8 +226,8 @@ impl TrianglePipeline {
         // Dynamic rendering pipelines declare the attachment formats they will
         // render into instead of baking in a VkRenderPass/subpass.
         let color_attachment_formats = [color_attachment_format];
-        let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
-            .color_attachment_formats(&color_attachment_formats);
+        let mut rendering_info =
+            vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_attachment_formats);
         let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&stages)
             .vertex_input_state(&vertex_input)
@@ -245,11 +242,7 @@ impl TrianglePipeline {
         let pipeline = unsafe {
             // Pipeline creation may compile/link GPU-specific machine code. A
             // pipeline cache could speed this up, but this app passes null.
-            device.create_graphics_pipelines(
-                vk::PipelineCache::null(),
-                std::slice::from_ref(&pipeline_info),
-                None,
-            )
+            device.create_graphics_pipelines(vk::PipelineCache::null(), std::slice::from_ref(&pipeline_info), None)
         }
         .map_err(|(_, e)| {
             unsafe {
@@ -271,11 +264,7 @@ impl TrianglePipeline {
         let offsets = [0];
         unsafe {
             // Select this graphics pipeline for later draw commands.
-            device.cmd_bind_pipeline(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline,
-            );
+            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
             // Bind vertex buffer slot 0 so the vertex shader receives TriangleVertex data.
             device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
             // Draw 3 vertices, 1 instance, starting at vertex 0 and instance 0.
@@ -388,8 +377,7 @@ fn find_memory_type(
 ) -> Result<u32, String> {
     // Vulkan returns a bitmask of compatible memory types for the buffer. We pick
     // one whose properties allow CPU mapping and coherent visibility.
-    let memory_properties =
-        unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    let memory_properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
     for i in 0..memory_properties.memory_type_count {
         let supported = (type_filter & (1 << i)) != 0;

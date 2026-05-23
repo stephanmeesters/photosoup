@@ -1,6 +1,9 @@
 use std::{
-    env, ffi::OsString, fs, process::Command,
+    env,
+    ffi::OsString,
+    fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 fn main() {

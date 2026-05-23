@@ -51,12 +51,7 @@ impl ApplicationHandler for App {
         self.window = Some(window);
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window_id: winit::window::WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: winit::window::WindowId, event: WindowEvent) {
         let Some(window) = self.window.as_ref() else {
             return;
         };
@@ -80,11 +75,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let (Some(renderer), Some(egui_state), Some(start_time)) = (
-                    self.renderer.as_mut(),
-                    self.egui_state.as_mut(),
-                    self.start_time,
-                ) {
+                if let (Some(renderer), Some(egui_state), Some(start_time)) =
+                    (self.renderer.as_mut(), self.egui_state.as_mut(), self.start_time)
+                {
                     let now = Instant::now();
                     let frame_dt = self
                         .last_frame_time

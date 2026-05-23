@@ -59,12 +59,7 @@ impl Pipeline for ComputeCirclePass {
         // image, then copies that image into the acquired swapchain image.
         self.pipeline
             .record(ctx.device, ctx.command_buffer, targets, ctx.image_index)?;
-        targets.record_copy_to_swapchain(
-            ctx.device,
-            ctx.command_buffer,
-            ctx.image_index,
-            ctx.swapchain_image,
-        )
+        targets.record_copy_to_swapchain(ctx.device, ctx.command_buffer, ctx.image_index, ctx.swapchain_image)
     }
 
     fn destroy(&mut self, device: &ash::Device) {
@@ -93,8 +88,7 @@ impl ComputeCirclePipeline {
         let shader = Shader::load("shaders/circle.cs.hlsl")?;
         // Build the descriptor layout from SPIR-V reflection instead of manually
         // duplicating HLSL register bindings in Rust.
-        let (descriptor_set_layout, descriptor_bindings) =
-            create_descriptor_set_layout(device, &shader)?;
+        let (descriptor_set_layout, descriptor_bindings) = create_descriptor_set_layout(device, &shader)?;
         let pipeline_layout = create_pipeline_layout(device, descriptor_set_layout)?;
         let pipeline = create_pipeline(device, pipeline_layout, &shader)?;
 
@@ -108,11 +102,7 @@ impl ComputeCirclePipeline {
         })
     }
 
-    pub fn recreate_descriptors(
-        &mut self,
-        device: &ash::Device,
-        targets: &ComputeTargets,
-    ) -> Result<(), String> {
+    pub fn recreate_descriptors(&mut self, device: &ash::Device, targets: &ComputeTargets) -> Result<(), String> {
         self.destroy_descriptors(device);
 
         // Descriptor pools need capacities per descriptor type, not just a total
@@ -148,8 +138,7 @@ impl ComputeCirclePipeline {
             .find(|binding| binding.descriptor_type == vk::DescriptorType::STORAGE_IMAGE)
             .ok_or_else(|| "circle compute shader has no reflected storage image".to_string())?;
 
-        for (&descriptor_set, image_view) in self.descriptor_sets.iter().zip(targets.image_views())
-        {
+        for (&descriptor_set, image_view) in self.descriptor_sets.iter().zip(targets.image_views()) {
             // A storage image descriptor gives the shader write access to an image view.
             // GENERAL is the layout storage images use for unordered shader writes.
             let image_info = vk::DescriptorImageInfo::default()
@@ -190,11 +179,7 @@ impl ComputeCirclePipeline {
 
         unsafe {
             // Select the compute pipeline for subsequent compute commands.
-            device.cmd_bind_pipeline(
-                command_buffer,
-                vk::PipelineBindPoint::COMPUTE,
-                self.pipeline,
-            );
+            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, self.pipeline);
             // Bind the descriptor set containing this frame's storage image.
             device.cmd_bind_descriptor_sets(
                 command_buffer,
@@ -206,12 +191,7 @@ impl ComputeCirclePipeline {
             );
             // Dispatch workgroups. The shader local size is 16x16, so div_ceil
             // covers the whole image even when the extent is not divisible by 16.
-            device.cmd_dispatch(
-                command_buffer,
-                extent.width.div_ceil(16),
-                extent.height.div_ceil(16),
-                1,
-            );
+            device.cmd_dispatch(command_buffer, extent.width.div_ceil(16), extent.height.div_ceil(16), 1);
         }
 
         Ok(())
@@ -259,13 +239,7 @@ impl Drop for ComputeCirclePipeline {
 fn create_descriptor_set_layout(
     device: &ash::Device,
     shader: &Shader,
-) -> Result<
-    (
-        vk::DescriptorSetLayout,
-        Vec<vk::DescriptorSetLayoutBinding<'static>>,
-    ),
-    String,
-> {
+) -> Result<(vk::DescriptorSetLayout, Vec<vk::DescriptorSetLayoutBinding<'static>>), String> {
     // This layout tells Vulkan which resources set 0 contains. Pipeline creation
     // will fail if the shader's descriptors are incompatible with this layout.
     let bindings = shader.descriptor_set_layout_bindings(0, vk::ShaderStageFlags::COMPUTE)?;
@@ -286,8 +260,7 @@ fn create_pipeline_layout(
     // shader: descriptor set layouts plus push-constant ranges.
     let info = vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts);
 
-    unsafe { device.create_pipeline_layout(&info, None) }
-        .map_err(|e| format!("create_compute_pipeline_layout: {e:?}"))
+    unsafe { device.create_pipeline_layout(&info, None) }.map_err(|e| format!("create_compute_pipeline_layout: {e:?}"))
 }
 
 fn create_pipeline(
@@ -319,15 +292,10 @@ fn create_pipeline(
         .stage(stage)
         .layout(pipeline_layout);
 
-    let result = unsafe {
-        device.create_compute_pipelines(
-            vk::PipelineCache::null(),
-            std::slice::from_ref(&info),
-            None,
-        )
-    }
-    .map_err(|(_, e)| format!("create_compute_pipeline: {e:?}"))
-    .map(|pipelines| pipelines[0]);
+    let result =
+        unsafe { device.create_compute_pipelines(vk::PipelineCache::null(), std::slice::from_ref(&info), None) }
+            .map_err(|(_, e)| format!("create_compute_pipeline: {e:?}"))
+            .map(|pipelines| pipelines[0]);
 
     unsafe {
         // The pipeline keeps what it needs internally; the temporary shader module

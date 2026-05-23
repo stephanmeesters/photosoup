@@ -8,10 +8,7 @@ mod triangle_pipeline;
 use ash::{khr, vk};
 use compute_circle_pipeline::ComputeCirclePass;
 use egui_pipeline::EguiPipeline;
-use pipeline::{
-    FrameBeginContext, FrameContext, FrameFinishContext, Pipeline, RenderingContext,
-    SwapchainContext,
-};
+use pipeline::{FrameBeginContext, FrameContext, FrameFinishContext, Pipeline, RenderingContext, SwapchainContext};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{ffi::CString, os::raw::c_char};
 use triangle_pipeline::TrianglePass;
@@ -93,9 +90,8 @@ impl Renderer {
         // ash-window asks the platform which instance extensions are required
         // for creating a surface for this specific display backend.
         let display_handle = window.display_handle().map_err(|e| e.to_string())?;
-        let required_extensions =
-            ash_window::enumerate_required_extensions(display_handle.as_raw())
-                .map_err(|e| format!("enumerate_required_extensions: {e:?}"))?;
+        let required_extensions = ash_window::enumerate_required_extensions(display_handle.as_raw())
+            .map_err(|e| format!("enumerate_required_extensions: {e:?}"))?;
 
         // Instance creation enables platform surface extensions. No validation
         // layers are enabled here because layers is intentionally empty.
@@ -105,28 +101,21 @@ impl Renderer {
             .enabled_extension_names(required_extensions)
             .enabled_layer_names(&layers);
 
-        let instance = unsafe { entry.create_instance(&instance_info, None) }
-            .map_err(|e| format!("create_instance: {e:?}"))?;
+        let instance =
+            unsafe { entry.create_instance(&instance_info, None) }.map_err(|e| format!("create_instance: {e:?}"))?;
 
         // The surface wraps the native window/display handles in a Vulkan object
         // that can be queried for presentation support.
         let window_handle = window.window_handle().map_err(|e| e.to_string())?;
         let surface = unsafe {
-            ash_window::create_surface(
-                &entry,
-                &instance,
-                display_handle.as_raw(),
-                window_handle.as_raw(),
-                None,
-            )
+            ash_window::create_surface(&entry, &instance, display_handle.as_raw(), window_handle.as_raw(), None)
         }
         .map_err(|e| format!("create_surface: {e:?}"))?;
         let surface_loader = khr::surface::Instance::new(&entry, &instance);
 
         // Pick a GPU that can render and present to this surface and supports
         // VK_KHR_swapchain.
-        let (physical_device, queue_families) =
-            pick_physical_device(&instance, &surface_loader, surface)?;
+        let (physical_device, queue_families) = pick_physical_device(&instance, &surface_loader, surface)?;
 
         // VK_KHR_swapchain is a device extension, so it is enabled when creating
         // the logical device, not when creating the instance.
@@ -310,10 +299,7 @@ impl Renderer {
             .swapchains(&swapchains)
             .image_indices(&image_indices);
 
-        let result = unsafe {
-            self.swapchain_loader
-                .queue_present(self.present_queue, &present_info)
-        };
+        let result = unsafe { self.swapchain_loader.queue_present(self.present_queue, &present_info) };
 
         let finish_context = FrameFinishContext {
             frame_index: self.current_frame,
@@ -387,8 +373,7 @@ impl Renderer {
         unsafe {
             // Dynamic rendering binds the current swapchain image view as the
             // active color attachment without a VkRenderPass/VkFramebuffer pair.
-            self.device
-                .cmd_begin_rendering(command_buffer, &rendering_info);
+            self.device.cmd_begin_rendering(command_buffer, &rendering_info);
             let rendering_context = RenderingContext {
                 device: &self.device,
                 command_buffer,
@@ -453,13 +438,9 @@ impl Renderer {
 
         // The compute pass copies into the swapchain before dynamic rendering
         // uses the image as a color attachment.
-        let required_usage =
-            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST;
+        let required_usage = vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST;
         if !surface_caps.supported_usage_flags.contains(required_usage) {
-            return Err(
-                "surface does not support color attachment + transfer destination images"
-                    .to_string(),
-            );
+            return Err("surface does not support color attachment + transfer destination images".to_string());
         }
 
         // Prefer a common sRGB format for correct presentation gamma, otherwise
@@ -467,10 +448,7 @@ impl Renderer {
         let surface_format = formats
             .iter()
             .copied()
-            .find(|f| {
-                f.format == vk::Format::B8G8R8A8_SRGB
-                    && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
-            })
+            .find(|f| f.format == vk::Format::B8G8R8A8_SRGB && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
             .unwrap_or(formats[0]);
 
         // Prefer MAILBOX for lower latency; FIFO is guaranteed by Vulkan.
@@ -487,10 +465,9 @@ impl Renderer {
             surface_caps.current_extent
         } else {
             vk::Extent2D {
-                width: extent_hint.width.clamp(
-                    surface_caps.min_image_extent.width,
-                    surface_caps.max_image_extent.width,
-                ),
+                width: extent_hint
+                    .width
+                    .clamp(surface_caps.min_image_extent.width, surface_caps.max_image_extent.width),
                 height: extent_hint.height.clamp(
                     surface_caps.min_image_extent.height,
                     surface_caps.max_image_extent.height,
@@ -508,12 +485,11 @@ impl Renderer {
         // EXCLUSIVE is faster when graphics and present use the same queue family.
         // CONCURRENT is simpler when ownership must span two different families.
         let indices = [self.graphics_family, self.present_family];
-        let (image_sharing_mode, queue_family_indices) =
-            if self.graphics_family == self.present_family {
-                (vk::SharingMode::EXCLUSIVE, Vec::new())
-            } else {
-                (vk::SharingMode::CONCURRENT, indices.to_vec())
-            };
+        let (image_sharing_mode, queue_family_indices) = if self.graphics_family == self.present_family {
+            (vk::SharingMode::EXCLUSIVE, Vec::new())
+        } else {
+            (vk::SharingMode::CONCURRENT, indices.to_vec())
+        };
 
         // Swapchain creation allocates the presentation images owned by the
         // window system. We get their handles afterward with get_swapchain_images.
@@ -533,11 +509,8 @@ impl Renderer {
             .clipped(true)
             .old_swapchain(vk::SwapchainKHR::null());
 
-        let swapchain = unsafe {
-            self.swapchain_loader
-                .create_swapchain(&swapchain_info, None)
-        }
-        .map_err(|e| format!("create_swapchain: {e:?}"))?;
+        let swapchain = unsafe { self.swapchain_loader.create_swapchain(&swapchain_info, None) }
+            .map_err(|e| format!("create_swapchain: {e:?}"))?;
         let images = unsafe { self.swapchain_loader.get_swapchain_images(swapchain) }
             .map_err(|e| format!("get_swapchain_images: {e:?}"))?;
 
@@ -558,8 +531,8 @@ impl Renderer {
     fn create_pipelines(&mut self) -> Result<(), String> {
         // Pipeline order is the frame order: compute background, triangle overlay,
         // then egui overlay.
-        let compute_circle_pass = ComputeCirclePass::new(&self.device)
-            .map_err(|e| format!("create_compute_circle_pipeline: {e}"))?;
+        let compute_circle_pass =
+            ComputeCirclePass::new(&self.device).map_err(|e| format!("create_compute_circle_pipeline: {e}"))?;
         let egui_pipeline = EguiPipeline::new(
             &self.instance,
             self.physical_device,
@@ -662,8 +635,7 @@ impl Renderer {
                     .map_err(|e| format!("create_semaphore: {e:?}"))?,
             );
             self.in_flight_fences.push(
-                unsafe { self.device.create_fence(&fence_info, None) }
-                    .map_err(|e| format!("create_fence: {e:?}"))?,
+                unsafe { self.device.create_fence(&fence_info, None) }.map_err(|e| format!("create_fence: {e:?}"))?,
             );
         }
         Ok(())
@@ -711,8 +683,7 @@ impl Renderer {
                 self.device.destroy_image_view(view, None);
             }
             if self.swapchain != vk::SwapchainKHR::null() {
-                self.swapchain_loader
-                    .destroy_swapchain(self.swapchain, None);
+                self.swapchain_loader.destroy_swapchain(self.swapchain, None);
                 self.swapchain = vk::SwapchainKHR::null();
             }
         }
@@ -796,8 +767,8 @@ fn pick_physical_device(
 ) -> Result<(vk::PhysicalDevice, QueueFamilyIndices), String> {
     // Enumerate installed Vulkan-capable adapters and pick the first one that
     // has queue families and swapchain support for this surface.
-    let devices = unsafe { instance.enumerate_physical_devices() }
-        .map_err(|e| format!("enumerate_physical_devices: {e:?}"))?;
+    let devices =
+        unsafe { instance.enumerate_physical_devices() }.map_err(|e| format!("enumerate_physical_devices: {e:?}"))?;
 
     for device in devices {
         if let Some(indices) = find_queue_families(instance, device, surface_loader, surface)? {
@@ -831,8 +802,7 @@ fn physical_device_supports_required_capabilities(
     }
 
     let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default();
-    let mut features =
-        vk::PhysicalDeviceFeatures2::default().push_next(&mut dynamic_rendering_features);
+    let mut features = vk::PhysicalDeviceFeatures2::default().push_next(&mut dynamic_rendering_features);
     unsafe {
         instance.get_physical_device_features2(device, &mut features);
     }
@@ -842,11 +812,8 @@ fn physical_device_supports_required_capabilities(
 
     // The HLSL compute pass writes packed RGBA bytes to an r32ui storage image,
     // then copies the size-compatible pixels to the swapchain.
-    let compute_target_format = unsafe {
-        instance.get_physical_device_format_properties(device, vk::Format::R32_UINT)
-    };
-    let required_format_features =
-        vk::FormatFeatureFlags::STORAGE_IMAGE | vk::FormatFeatureFlags::TRANSFER_SRC;
+    let compute_target_format = unsafe { instance.get_physical_device_format_properties(device, vk::Format::R32_UINT) };
+    let required_format_features = vk::FormatFeatureFlags::STORAGE_IMAGE | vk::FormatFeatureFlags::TRANSFER_SRC;
     if !compute_target_format
         .optimal_tiling_features
         .contains(required_format_features)
@@ -877,10 +844,9 @@ fn find_queue_families(
             graphics_family = Some(index as u32);
         }
         // Present support means this queue family can hand images to this window surface.
-        let present_support = unsafe {
-            surface_loader.get_physical_device_surface_support(device, index as u32, surface)
-        }
-        .map_err(|e| format!("surface_support: {e:?}"))?;
+        let present_support =
+            unsafe { surface_loader.get_physical_device_surface_support(device, index as u32, surface) }
+                .map_err(|e| format!("surface_support: {e:?}"))?;
         if present_support {
             present_family = Some(index as u32);
         }

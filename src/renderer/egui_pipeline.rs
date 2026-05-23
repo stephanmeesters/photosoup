@@ -1,13 +1,9 @@
 use super::{
-    pipeline::{
-        FrameBeginContext, FrameFinishContext, Pipeline, RenderingContext, SwapchainContext,
-    },
+    pipeline::{FrameBeginContext, FrameFinishContext, Pipeline, RenderingContext, SwapchainContext},
     RendererError, MAX_FRAMES_IN_FLIGHT,
 };
 use ash::vk;
-use egui_ash_renderer::{
-    DynamicRendering, Options as EguiRendererOptions, Renderer as EguiRenderer,
-};
+use egui_ash_renderer::{DynamicRendering, Options as EguiRendererOptions, Renderer as EguiRenderer};
 
 pub struct EguiPipeline {
     renderer: EguiRenderer,
@@ -79,11 +75,8 @@ impl Pipeline for EguiPipeline {
         if let Some(frame) = ctx.egui_frame {
             let command_buffer = ctx.command_buffer;
             let extent = ctx.extent;
-            let clipped_primitives = clamp_primitives_to_extent(
-                frame.clipped_primitives.as_slice(),
-                extent,
-                frame.pixels_per_point,
-            );
+            let clipped_primitives =
+                clamp_primitives_to_extent(frame.clipped_primitives.as_slice(), extent, frame.pixels_per_point);
             self.renderer
                 .cmd_draw(
                     command_buffer,

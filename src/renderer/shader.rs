@@ -48,20 +48,15 @@ fn normalize_path(path: &Path) -> String {
         .join("/")
 }
 
-pub fn create_shader_module(
-    device: &ash::Device,
-    bytes: &[u8],
-) -> Result<vk::ShaderModule, String> {
+pub fn create_shader_module(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule, String> {
     // Vulkan wants SPIR-V as u32 words. ash::util::read_spv validates alignment
     // and converts the embedded byte slice into that word buffer.
-    let words = ash::util::read_spv(&mut std::io::Cursor::new(bytes))
-        .map_err(|e| format!("read_spv: {e:?}"))?;
+    let words = ash::util::read_spv(&mut std::io::Cursor::new(bytes)).map_err(|e| format!("read_spv: {e:?}"))?;
     let info = vk::ShaderModuleCreateInfo::default().code(&words);
 
     // ash mirrors the Vulkan C API: create_* returns an opaque handle that must
     // later be destroyed with the matching destroy_* call.
-    unsafe { device.create_shader_module(&info, None) }
-        .map_err(|e| format!("create_shader_module: {e:?}"))
+    unsafe { device.create_shader_module(&info, None) }.map_err(|e| format!("create_shader_module: {e:?}"))
 }
 
 pub fn descriptor_set_layout_bindings(
@@ -71,8 +66,7 @@ pub fn descriptor_set_layout_bindings(
 ) -> Result<Vec<vk::DescriptorSetLayoutBinding<'static>>, String> {
     // Reflection reads the compiled shader and tells us which descriptor slots
     // it declares, so Rust and HLSL stay in sync.
-    let reflection = Reflection::new_from_spirv(bytes)
-        .map_err(|e| format!("reflect_shader_descriptors: {e}"))?;
+    let reflection = Reflection::new_from_spirv(bytes).map_err(|e| format!("reflect_shader_descriptors: {e}"))?;
     let descriptor_sets = reflection
         .get_descriptor_sets()
         .map_err(|e| format!("reflect_shader_descriptor_sets: {e}"))?;
@@ -99,8 +93,7 @@ pub fn descriptor_set_layout_bindings(
 pub fn compute_group_size(bytes: &[u8]) -> Result<Option<(u32, u32, u32)>, String> {
     // For compute shaders, local_size_x/y/z controls how many invocations are in
     // one workgroup. Dispatch counts are in workgroups, not pixels.
-    let reflection =
-        Reflection::new_from_spirv(bytes).map_err(|e| format!("reflect_compute_shader: {e}"))?;
+    let reflection = Reflection::new_from_spirv(bytes).map_err(|e| format!("reflect_compute_shader: {e}"))?;
     Ok(reflection.get_compute_group_size())
 }
 

@@ -242,8 +242,7 @@ fn find_memory_type(
 ) -> Result<u32, String> {
     // type_filter is a bitmask from Vulkan saying which memory types can back
     // this resource. We additionally require DEVICE_LOCAL for fast GPU access.
-    let memory_properties =
-        unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    let memory_properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
     for i in 0..memory_properties.memory_type_count {
         let supported = (type_filter & (1 << i)) != 0;
