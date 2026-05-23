@@ -5,6 +5,7 @@ use std::path::Path;
 include!(concat!(env!("OUT_DIR"), "/shader_index.rs"));
 
 pub struct Shader {
+    // SPIR-V bytes compiled by build.rs and embedded into the executable.
     spirv: &'static [u8],
 }
 
@@ -21,6 +22,7 @@ impl Shader {
     }
 
     pub fn module(&self, device: &ash::Device) -> Result<vk::ShaderModule, String> {
+        // Shader modules are temporary Vulkan objects used while creating pipelines.
         create_shader_module(device, self.spirv)
     }
 
@@ -38,6 +40,8 @@ impl Shader {
 }
 
 fn normalize_path(path: &Path) -> String {
+    // build.rs indexes shader paths with forward slashes, so normalize platform
+    // path separators before looking up the embedded artifact.
     path.components()
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
@@ -48,10 +52,14 @@ pub fn create_shader_module(
     device: &ash::Device,
     bytes: &[u8],
 ) -> Result<vk::ShaderModule, String> {
+    // Vulkan wants SPIR-V as u32 words. ash::util::read_spv validates alignment
+    // and converts the embedded byte slice into that word buffer.
     let words = ash::util::read_spv(&mut std::io::Cursor::new(bytes))
         .map_err(|e| format!("read_spv: {e:?}"))?;
     let info = vk::ShaderModuleCreateInfo::default().code(&words);
 
+    // ash mirrors the Vulkan C API: create_* returns an opaque handle that must
+    // later be destroyed with the matching destroy_* call.
     unsafe { device.create_shader_module(&info, None) }
         .map_err(|e| format!("create_shader_module: {e:?}"))
 }
@@ -61,6 +69,8 @@ pub fn descriptor_set_layout_bindings(
     set: u32,
     stage_flags: vk::ShaderStageFlags,
 ) -> Result<Vec<vk::DescriptorSetLayoutBinding<'static>>, String> {
+    // Reflection reads the compiled shader and tells us which descriptor slots
+    // it declares, so Rust and GLSL stay in sync.
     let reflection = Reflection::new_from_spirv(bytes)
         .map_err(|e| format!("reflect_shader_descriptors: {e}"))?;
     let descriptor_sets = reflection
@@ -74,15 +84,21 @@ pub fn descriptor_set_layout_bindings(
         .iter()
         .map(|(&binding, info)| {
             Ok(vk::DescriptorSetLayoutBinding::default()
+                // Binding number must match layout(binding = N) in GLSL.
                 .binding(binding)
+                // Descriptor type tells Vulkan whether the shader expects an image,
+                // sampler, uniform buffer, storage buffer, etc.
                 .descriptor_type(to_vk_descriptor_type(info.ty)?)
                 .descriptor_count(binding_count(&info.binding_count)?)
+                // Only the compute stage can access these bindings in this app.
                 .stage_flags(stage_flags))
         })
         .collect()
 }
 
 pub fn compute_group_size(bytes: &[u8]) -> Result<Option<(u32, u32, u32)>, String> {
+    // For compute shaders, local_size_x/y/z controls how many invocations are in
+    // one workgroup. Dispatch counts are in workgroups, not pixels.
     let reflection =
         Reflection::new_from_spirv(bytes).map_err(|e| format!("reflect_compute_shader: {e}"))?;
     Ok(reflection.get_compute_group_size())

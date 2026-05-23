@@ -1,11 +1,13 @@
 use super::{
     pipeline::{
-        FrameBeginContext, FrameFinishContext, Pipeline, RenderPassContext, SwapchainContext,
+        FrameBeginContext, FrameFinishContext, Pipeline, RenderingContext, SwapchainContext,
     },
     RendererError, MAX_FRAMES_IN_FLIGHT,
 };
 use ash::vk;
-use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer};
+use egui_ash_renderer::{
+    DynamicRendering, Options as EguiRendererOptions, Renderer as EguiRenderer,
+};
 
 pub struct EguiPipeline {
     renderer: EguiRenderer,
@@ -17,13 +19,16 @@ impl EguiPipeline {
         instance: &ash::Instance,
         physical_device: vk::PhysicalDevice,
         device: ash::Device,
-        render_pass: vk::RenderPass,
+        color_attachment_format: vk::Format,
     ) -> Result<Self, String> {
         let renderer = EguiRenderer::with_default_allocator(
             instance,
             physical_device,
             device,
-            render_pass,
+            DynamicRendering {
+                color_attachment_format,
+                depth_attachment_format: None,
+            },
             EguiRendererOptions {
                 in_flight_frames: MAX_FRAMES_IN_FLIGHT,
                 srgb_framebuffer: true,
@@ -41,10 +46,12 @@ impl EguiPipeline {
 
 impl Pipeline for EguiPipeline {
     fn on_swapchain_created(&mut self, ctx: &SwapchainContext<'_>) -> Result<(), String> {
-        let render_pass = ctx.render_pass;
         self.renderer
-            .set_render_pass(render_pass)
-            .map_err(|e| format!("set_egui_render_pass: {e:?}"))
+            .set_dynamic_rendering(DynamicRendering {
+                color_attachment_format: ctx.color_attachment_format,
+                depth_attachment_format: None,
+            })
+            .map_err(|e| format!("set_egui_dynamic_rendering: {e:?}"))
     }
 
     fn begin_frame(&mut self, ctx: &FrameBeginContext<'_>) -> Result<(), RendererError> {
@@ -68,16 +75,21 @@ impl Pipeline for EguiPipeline {
         Ok(())
     }
 
-    fn record_render_pass(&mut self, ctx: &RenderPassContext<'_>) -> Result<(), String> {
+    fn record_rendering(&mut self, ctx: &RenderingContext<'_>) -> Result<(), String> {
         if let Some(frame) = ctx.egui_frame {
             let command_buffer = ctx.command_buffer;
             let extent = ctx.extent;
+            let clipped_primitives = clamp_primitives_to_extent(
+                frame.clipped_primitives.as_slice(),
+                extent,
+                frame.pixels_per_point,
+            );
             self.renderer
                 .cmd_draw(
                     command_buffer,
                     extent,
                     frame.pixels_per_point,
-                    frame.clipped_primitives.as_slice(),
+                    clipped_primitives.as_slice(),
                 )
                 .map_err(|e| format!("egui cmd_draw: {e:?}"))?;
         }
@@ -91,4 +103,34 @@ impl Pipeline for EguiPipeline {
     }
 
     fn destroy(&mut self, _device: &ash::Device) {}
+}
+
+fn clamp_primitives_to_extent(
+    primitives: &[egui::ClippedPrimitive],
+    extent: vk::Extent2D,
+    pixels_per_point: f32,
+) -> Vec<egui::ClippedPrimitive> {
+    let max_x = extent.width as f32 / pixels_per_point;
+    let max_y = extent.height as f32 / pixels_per_point;
+
+    primitives
+        .iter()
+        .filter_map(|primitive| {
+            let min = egui::pos2(
+                primitive.clip_rect.min.x.clamp(0.0, max_x),
+                primitive.clip_rect.min.y.clamp(0.0, max_y),
+            );
+            let max = egui::pos2(
+                primitive.clip_rect.max.x.clamp(0.0, max_x),
+                primitive.clip_rect.max.y.clamp(0.0, max_y),
+            );
+            if min.x >= max.x || min.y >= max.y {
+                return None;
+            }
+
+            let mut primitive = primitive.clone();
+            primitive.clip_rect = egui::Rect::from_min_max(min, max);
+            Some(primitive)
+        })
+        .collect()
 }

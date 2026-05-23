@@ -9,7 +9,7 @@ use ash::{khr, vk};
 use compute_circle_pipeline::ComputeCirclePass;
 use egui_pipeline::EguiPipeline;
 use pipeline::{
-    FrameBeginContext, FrameContext, FrameFinishContext, Pipeline, RenderPassContext,
+    FrameBeginContext, FrameContext, FrameFinishContext, Pipeline, RenderingContext,
     SwapchainContext,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -20,14 +20,23 @@ use winit::window::Window;
 pub(super) const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 pub struct Renderer {
+    // Entry loads Vulkan function pointers from the system loader.
     _entry: ash::Entry,
+    // Instance is the root Vulkan object for physical-device and surface queries.
     instance: ash::Instance,
+    // Extension loader for surface-related KHR calls.
     surface_loader: khr::surface::Instance,
+    // Extension loader for swapchain-related KHR calls.
     swapchain_loader: khr::swapchain::Device,
+    // Window-system surface that connects Vulkan presentation to the winit window.
     surface: vk::SurfaceKHR,
+    // Selected GPU/adapter.
     physical_device: vk::PhysicalDevice,
+    // Logical device used to create queues and most Vulkan objects.
     device: ash::Device,
+    // Queue that executes graphics/compute/transfer commands in this app.
     graphics_queue: vk::Queue,
+    // Queue used to present swapchain images to the window.
     present_queue: vk::Queue,
     graphics_family: u32,
     present_family: u32,
@@ -36,15 +45,14 @@ pub struct Renderer {
     swapchain_image_views: Vec<vk::ImageView>,
     swapchain_format: vk::Format,
     swapchain_extent: vk::Extent2D,
-    render_pass: vk::RenderPass,
     pipelines: Vec<Box<dyn Pipeline>>,
-    framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
     current_frame: usize,
+    // Resize requests are stored until swapchain recreation can safely use them.
     pending_extent: Option<vk::Extent2D>,
 }
 
@@ -68,8 +76,11 @@ pub struct QueueFamilyIndices {
 
 impl Renderer {
     pub fn new(window: &Window) -> Result<Self, String> {
+        // ash::Entry::load dynamically loads the Vulkan loader from the OS.
         let entry = unsafe { ash::Entry::load() }.map_err(|e| e.to_string())?;
 
+        // ApplicationInfo is mostly metadata, but api_version selects the Vulkan
+        // version whose commands/features we promise to use.
         let app_name = CString::new("photosoup").unwrap();
         let engine_name = CString::new("photosoup").unwrap();
         let app_info = vk::ApplicationInfo::default()
@@ -77,13 +88,17 @@ impl Renderer {
             .application_version(0)
             .engine_name(&engine_name)
             .engine_version(0)
-            .api_version(vk::API_VERSION_1_0);
+            .api_version(vk::API_VERSION_1_3);
 
+        // ash-window asks the platform which instance extensions are required
+        // for creating a surface for this specific display backend.
         let display_handle = window.display_handle().map_err(|e| e.to_string())?;
         let required_extensions =
             ash_window::enumerate_required_extensions(display_handle.as_raw())
                 .map_err(|e| format!("enumerate_required_extensions: {e:?}"))?;
 
+        // Instance creation enables platform surface extensions. No validation
+        // layers are enabled here because layers is intentionally empty.
         let layers: Vec<*const c_char> = Vec::new();
         let instance_info = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
@@ -93,6 +108,8 @@ impl Renderer {
         let instance = unsafe { entry.create_instance(&instance_info, None) }
             .map_err(|e| format!("create_instance: {e:?}"))?;
 
+        // The surface wraps the native window/display handles in a Vulkan object
+        // that can be queried for presentation support.
         let window_handle = window.window_handle().map_err(|e| e.to_string())?;
         let surface = unsafe {
             ash_window::create_surface(
@@ -106,9 +123,13 @@ impl Renderer {
         .map_err(|e| format!("create_surface: {e:?}"))?;
         let surface_loader = khr::surface::Instance::new(&entry, &instance);
 
+        // Pick a GPU that can render and present to this surface and supports
+        // VK_KHR_swapchain.
         let (physical_device, queue_families) =
             pick_physical_device(&instance, &surface_loader, surface)?;
 
+        // VK_KHR_swapchain is a device extension, so it is enabled when creating
+        // the logical device, not when creating the instance.
         let device_extensions = [khr::swapchain::NAME.as_ptr()];
         let queue_priorities = [1.0_f32];
         let mut queue_infos = Vec::new();
@@ -125,16 +146,23 @@ impl Renderer {
             );
         }
 
+        let mut dynamic_rendering_features =
+            vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
-            .enabled_extension_names(&device_extensions);
+            .enabled_extension_names(&device_extensions)
+            .push_next(&mut dynamic_rendering_features);
 
         let device = unsafe { instance.create_device(physical_device, &device_info, None) }
             .map_err(|e| format!("create_device: {e:?}"))?;
+        // Queue handles are retrieved from the logical device; index 0 means the
+        // first queue from each requested queue family.
         let graphics_queue = unsafe { device.get_device_queue(queue_families.graphics_family, 0) };
         let present_queue = unsafe { device.get_device_queue(queue_families.present_family, 0) };
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
 
+        // Build the renderer in phases: create long-lived Vulkan objects first,
+        // then swapchain-sized resources that can be rebuilt on resize.
         let mut renderer = Self {
             _entry: entry,
             instance,
@@ -152,9 +180,7 @@ impl Renderer {
             swapchain_image_views: Vec::new(),
             swapchain_format: vk::Format::UNDEFINED,
             swapchain_extent: vk::Extent2D::default(),
-            render_pass: vk::RenderPass::null(),
             pipelines: Vec::new(),
-            framebuffers: Vec::new(),
             command_pool: vk::CommandPool::null(),
             command_buffers: Vec::new(),
             image_available_semaphores: Vec::new(),
@@ -170,7 +196,6 @@ impl Renderer {
             height: size.height,
         })?;
         renderer.create_image_views()?;
-        renderer.create_render_pass()?;
         renderer.create_pipelines()?;
         renderer.create_swapchain_dependent_resources()?;
         renderer.create_sync_objects()?;
@@ -178,6 +203,8 @@ impl Renderer {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
+        // A minimized window can report zero size. Vulkan swapchains cannot have
+        // zero width/height, so wait until a real size arrives.
         if width == 0 || height == 0 {
             return;
         }
@@ -186,6 +213,8 @@ impl Renderer {
     }
 
     pub fn recreate_swapchain(&mut self) {
+        // Wait for queued work to finish before destroying resources that command
+        // buffers or presentation may still reference.
         let _ = unsafe { self.device.device_wait_idle() };
         self.destroy_swapchain_resources();
         let extent_hint = self.pending_extent.take().unwrap_or(self.swapchain_extent);
@@ -202,6 +231,8 @@ impl Renderer {
     pub fn draw_frame(&mut self, egui_frame: Option<EguiFrame>) -> Result<(), RendererError> {
         let fence = self.in_flight_fences[self.current_frame];
         unsafe {
+            // This fence was attached to the last submit for current_frame. Waiting
+            // prevents overwriting per-frame CPU/GPU resources still in use.
             self.device
                 .wait_for_fences(&[fence], true, u64::MAX)
                 .map_err(|e| RendererError::Fatal(format!("wait_for_fences: {e:?}")))?;
@@ -217,6 +248,8 @@ impl Renderer {
             pipeline.begin_frame(&begin_context)?;
         }
 
+        // Acquire chooses which swapchain image we may render into. The semaphore
+        // is signaled by the presentation engine when that image is ready.
         let (image_index, acquire_suboptimal) = unsafe {
             self.swapchain_loader.acquire_next_image(
                 self.swapchain,
@@ -235,11 +268,14 @@ impl Renderer {
             return Ok(());
         }
 
+        // Record all GPU commands for the acquired image before submitting them.
         let command_buffer = self.command_buffers[image_index as usize];
         self.record_command_buffer(command_buffer, image_index, egui_frame.as_ref())
             .map_err(RendererError::Fatal)?;
 
         unsafe {
+            // The fence is about to be used for a new queue submission, so it must
+            // be unsignaled before queue_submit attaches it.
             self.device
                 .reset_fences(&[fence])
                 .map_err(|e| RendererError::Fatal(format!("reset_fences: {e:?}")))?;
@@ -247,7 +283,9 @@ impl Renderer {
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let signal_semaphores = [self.render_finished_semaphores[image_index as usize]];
-        let wait_stages = [vk::PipelineStageFlags::COMPUTE_SHADER];
+        // The command buffer starts with offscreen compute work. The acquired
+        // swapchain image is first touched by the transfer stage.
+        let wait_stages = [vk::PipelineStageFlags::TRANSFER];
         let command_buffers = [command_buffer];
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
@@ -256,11 +294,15 @@ impl Renderer {
             .signal_semaphores(&signal_semaphores);
 
         unsafe {
+            // Submit sends the recorded command buffer to the GPU. It waits on
+            // image_available, signals render_finished, and signals fence on completion.
             self.device
                 .queue_submit(self.graphics_queue, &[submit_info], fence)
                 .map_err(|e| RendererError::Fatal(format!("queue_submit: {e:?}")))?;
         }
 
+        // Present waits until rendering is complete, then hands the image to the
+        // window system for display.
         let swapchains = [self.swapchain];
         let image_indices = [image_index];
         let present_info = vk::PresentInfoKHR::default()
@@ -300,30 +342,18 @@ impl Renderer {
         image_index: u32,
         egui_frame: Option<&EguiFrame>,
     ) -> Result<(), String> {
-        let _ = image_index;
-
         unsafe {
+            // RESET_COMMAND_BUFFER lets us reuse the per-image command buffer
+            // instead of allocating a new one every frame.
             self.device
                 .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
                 .map_err(|e| format!("reset_command_buffer: {e:?}"))?;
         }
 
         let begin_info = vk::CommandBufferBeginInfo::default();
-        let clear_values = [vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.05, 0.06, 0.10, 1.0],
-            },
-        }];
-        let render_pass_info = vk::RenderPassBeginInfo::default()
-            .render_pass(self.render_pass)
-            .framebuffer(self.framebuffers[image_index as usize])
-            .render_area(vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: self.swapchain_extent,
-            })
-            .clear_values(&clear_values);
 
         unsafe {
+            // After begin_command_buffer, cmd_* calls append GPU work into this buffer.
             self.device
                 .begin_command_buffer(command_buffer, &begin_info)
                 .map_err(|e| format!("begin_command_buffer: {e:?}"))?;
@@ -336,26 +366,59 @@ impl Renderer {
             swapchain_image: self.swapchain_images[image_index as usize],
         };
         for pipeline in &mut self.pipelines {
-            pipeline.record_before_render_pass(&frame_context)?;
+            // Compute and image-copy work happens before dynamic rendering starts.
+            pipeline.record_before_rendering(&frame_context)?;
         }
 
+        let color_attachment = vk::RenderingAttachmentInfo::default()
+            .image_view(self.swapchain_image_views[image_index as usize])
+            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::LOAD)
+            .store_op(vk::AttachmentStoreOp::STORE);
+        let color_attachments = [color_attachment];
+        let rendering_info = vk::RenderingInfo::default()
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: self.swapchain_extent,
+            })
+            .layer_count(1)
+            .color_attachments(&color_attachments);
+
         unsafe {
-            self.device.cmd_begin_render_pass(
-                command_buffer,
-                &render_pass_info,
-                vk::SubpassContents::INLINE,
-            );
-            let render_pass_context = RenderPassContext {
+            // Dynamic rendering binds the current swapchain image view as the
+            // active color attachment without a VkRenderPass/VkFramebuffer pair.
+            self.device
+                .cmd_begin_rendering(command_buffer, &rendering_info);
+            let rendering_context = RenderingContext {
                 device: &self.device,
                 command_buffer,
                 extent: self.swapchain_extent,
                 egui_frame,
             };
             for pipeline in &mut self.pipelines {
-                pipeline.record_render_pass(&render_pass_context)?;
+                // Graphics pipelines and egui record draw calls while the color
+                // attachment is active.
+                pipeline.record_rendering(&rendering_context)?;
             }
 
-            self.device.cmd_end_render_pass(command_buffer);
+            self.device.cmd_end_rendering(command_buffer);
+        }
+
+        transition_image(
+            &self.device,
+            command_buffer,
+            self.swapchain_images[image_index as usize],
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            vk::AccessFlags::empty(),
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+        );
+
+        unsafe {
+            // Ending finalizes validation of the recorded commands. The buffer is
+            // then ready to submit to a queue.
             self.device
                 .end_command_buffer(command_buffer)
                 .map_err(|e| format!("end_command_buffer: {e:?}"))?;
@@ -365,31 +428,42 @@ impl Renderer {
     }
 
     fn create_swapchain(&mut self, extent_hint: vk::Extent2D) -> Result<(), String> {
+        // Surface capabilities tell us image counts, transforms, extents, and
+        // usages supported by this window/system combination.
         let surface_caps = unsafe {
             self.surface_loader
                 .get_physical_device_surface_capabilities(self.physical_device, self.surface)
         }
         .map_err(|e| format!("surface capabilities: {e:?}"))?;
 
+        // Surface formats define the color format and color space of presented images.
         let formats = unsafe {
             self.surface_loader
                 .get_physical_device_surface_formats(self.physical_device, self.surface)
         }
         .map_err(|e| format!("surface formats: {e:?}"))?;
 
+        // Present modes control pacing: FIFO is vsync-like and always available;
+        // MAILBOX is low-latency triple buffering when supported.
         let present_modes = unsafe {
             self.surface_loader
                 .get_physical_device_surface_present_modes(self.physical_device, self.surface)
         }
         .map_err(|e| format!("present modes: {e:?}"))?;
 
-        if !surface_caps
-            .supported_usage_flags
-            .contains(vk::ImageUsageFlags::TRANSFER_DST)
-        {
-            return Err("surface does not support transfer destination images".to_string());
+        // The compute pass copies into the swapchain before dynamic rendering
+        // uses the image as a color attachment.
+        let required_usage =
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST;
+        if !surface_caps.supported_usage_flags.contains(required_usage) {
+            return Err(
+                "surface does not support color attachment + transfer destination images"
+                    .to_string(),
+            );
         }
 
+        // Prefer a common sRGB format for correct presentation gamma, otherwise
+        // use the first format the surface reports.
         let surface_format = formats
             .iter()
             .copied()
@@ -399,12 +473,16 @@ impl Renderer {
             })
             .unwrap_or(formats[0]);
 
+        // Prefer MAILBOX for lower latency; FIFO is guaranteed by Vulkan.
         let present_mode = present_modes
             .iter()
             .copied()
             .find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
             .unwrap_or(vk::PresentModeKHR::FIFO);
+        // let present_mode = vk::PresentModeKHR::FIFO;
 
+        // Some platforms dictate the swapchain extent. Others let the app choose
+        // within min/max bounds, so clamp the window size hint.
         let extent = if surface_caps.current_extent.width != u32::MAX {
             surface_caps.current_extent
         } else {
@@ -420,11 +498,15 @@ impl Renderer {
             }
         };
 
+        // Request one more image than the minimum so rendering can proceed while
+        // another image is queued for presentation, capped by max_image_count.
         let mut image_count = surface_caps.min_image_count + 1;
         if surface_caps.max_image_count > 0 {
             image_count = image_count.min(surface_caps.max_image_count);
         }
 
+        // EXCLUSIVE is faster when graphics and present use the same queue family.
+        // CONCURRENT is simpler when ownership must span two different families.
         let indices = [self.graphics_family, self.present_family];
         let (image_sharing_mode, queue_family_indices) =
             if self.graphics_family == self.present_family {
@@ -433,6 +515,8 @@ impl Renderer {
                 (vk::SharingMode::CONCURRENT, indices.to_vec())
             };
 
+        // Swapchain creation allocates the presentation images owned by the
+        // window system. We get their handles afterward with get_swapchain_images.
         let swapchain_info = vk::SwapchainCreateInfoKHR::default()
             .surface(self.surface)
             .min_image_count(image_count)
@@ -465,19 +549,22 @@ impl Renderer {
     }
 
     fn create_render_resources(&mut self) -> Result<(), String> {
+        // These resources depend on swapchain format, extent, image count, or
+        // swapchain image count, so they are rebuilt together.
         self.create_image_views()?;
-        self.create_render_pass()?;
         self.create_swapchain_dependent_resources()
     }
 
     fn create_pipelines(&mut self) -> Result<(), String> {
+        // Pipeline order is the frame order: compute background, triangle overlay,
+        // then egui overlay.
         let compute_circle_pass = ComputeCirclePass::new(&self.device)
             .map_err(|e| format!("create_compute_circle_pipeline: {e}"))?;
         let egui_pipeline = EguiPipeline::new(
             &self.instance,
             self.physical_device,
             self.device.clone(),
-            self.render_pass,
+            self.swapchain_format,
         )
         .map_err(|e| format!("create_egui_pipeline: {e}"))?;
         self.pipelines = vec![
@@ -489,18 +576,19 @@ impl Renderer {
     }
 
     fn create_swapchain_dependent_resources(&mut self) -> Result<(), String> {
+        // Give each pipeline the handles it needs to allocate resources tied to
+        // the current swapchain.
         let swapchain_context = SwapchainContext {
             instance: &self.instance,
             device: &self.device,
             physical_device: self.physical_device,
-            render_pass: self.render_pass,
+            color_attachment_format: self.swapchain_format,
             swapchain_images: &self.swapchain_images,
             extent: self.swapchain_extent,
         };
         for pipeline in &mut self.pipelines {
             pipeline.on_swapchain_created(&swapchain_context)?;
         }
-        self.create_framebuffers()?;
         self.create_command_pool()?;
         self.create_command_buffers()?;
         self.create_render_finished_semaphores()?;
@@ -508,6 +596,8 @@ impl Renderer {
     }
 
     fn create_image_views(&mut self) -> Result<(), String> {
+        // Swapchain images are raw images; image views describe how they are read
+        // or written as 2D color images.
         self.swapchain_image_views = self
             .swapchain_images
             .iter()
@@ -533,65 +623,12 @@ impl Renderer {
         Ok(())
     }
 
-    fn create_render_pass(&mut self) -> Result<(), String> {
-        let color_attachment = vk::AttachmentDescription::default()
-            .format(self.swapchain_format)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::LOAD)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
-        let color_attachment_ref = vk::AttachmentReference::default()
-            .attachment(0)
-            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-        let subpass = vk::SubpassDescription::default()
-            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-            .color_attachments(std::slice::from_ref(&color_attachment_ref));
-        let dependency = vk::SubpassDependency::default()
-            .src_subpass(vk::SUBPASS_EXTERNAL)
-            .dst_subpass(0)
-            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-            .dst_access_mask(
-                vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-            );
-
-        let render_pass_info = vk::RenderPassCreateInfo::default()
-            .attachments(std::slice::from_ref(&color_attachment))
-            .subpasses(std::slice::from_ref(&subpass))
-            .dependencies(std::slice::from_ref(&dependency));
-
-        self.render_pass = unsafe { self.device.create_render_pass(&render_pass_info, None) }
-            .map_err(|e| format!("create_render_pass: {e:?}"))?;
-        Ok(())
-    }
-
-    fn create_framebuffers(&mut self) -> Result<(), String> {
-        self.framebuffers = self
-            .swapchain_image_views
-            .iter()
-            .copied()
-            .map(|view| {
-                let attachments = [view];
-                let framebuffer_info = vk::FramebufferCreateInfo::default()
-                    .render_pass(self.render_pass)
-                    .attachments(&attachments)
-                    .width(self.swapchain_extent.width)
-                    .height(self.swapchain_extent.height)
-                    .layers(1);
-                unsafe { self.device.create_framebuffer(&framebuffer_info, None) }
-                    .map_err(|e| format!("create_framebuffer: {e:?}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(())
-    }
-
     fn create_command_pool(&mut self) -> Result<(), String> {
         if self.command_pool != vk::CommandPool::null() {
             unsafe { self.device.destroy_command_pool(self.command_pool, None) };
         }
+        // Command buffers allocated from this pool can be submitted to the
+        // graphics queue family. RESET_COMMAND_BUFFER permits per-frame reuse.
         let pool_info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(self.graphics_family)
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
@@ -601,10 +638,11 @@ impl Renderer {
     }
 
     fn create_command_buffers(&mut self) -> Result<(), String> {
+        // Use one primary command buffer per swapchain image.
         let alloc_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(self.command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(self.framebuffers.len() as u32);
+            .command_buffer_count(self.swapchain_images.len() as u32);
         self.command_buffers = unsafe { self.device.allocate_command_buffers(&alloc_info) }
             .map_err(|e| format!("allocate_command_buffers: {e:?}"))?;
         Ok(())
@@ -612,6 +650,8 @@ impl Renderer {
 
     fn create_sync_objects(&mut self) -> Result<(), String> {
         let semaphore_info = vk::SemaphoreCreateInfo::default();
+        // Start fences signaled so the first frame does not wait forever for a
+        // submission that has not happened yet.
         let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
         self.image_available_semaphores.clear();
         self.in_flight_fences.clear();
@@ -633,6 +673,8 @@ impl Renderer {
         let semaphore_info = vk::SemaphoreCreateInfo::default();
         self.destroy_render_finished_semaphores();
 
+        // These are indexed by swapchain image because presentation waits on the
+        // image-specific render completion signal.
         for _ in 0..self.swapchain_images.len() {
             self.render_finished_semaphores.push(
                 unsafe { self.device.create_semaphore(&semaphore_info, None) }
@@ -644,6 +686,8 @@ impl Renderer {
 
     fn destroy_render_finished_semaphores(&mut self) {
         unsafe {
+            // Semaphores have no Rust owner; every created Vulkan handle must be
+            // explicitly destroyed when no queue can still reference it.
             for semaphore in self.render_finished_semaphores.drain(..) {
                 self.device.destroy_semaphore(semaphore, None);
             }
@@ -652,10 +696,9 @@ impl Renderer {
 
     fn destroy_swapchain_resources(&mut self) {
         unsafe {
+            // Destroy in reverse dependency order: objects that reference the
+            // swapchain images go away before the swapchain itself.
             self.destroy_render_finished_semaphores();
-            for framebuffer in self.framebuffers.drain(..) {
-                self.device.destroy_framebuffer(framebuffer, None);
-            }
             if self.command_pool != vk::CommandPool::null() && !self.command_buffers.is_empty() {
                 self.device
                     .free_command_buffers(self.command_pool, &self.command_buffers);
@@ -663,10 +706,6 @@ impl Renderer {
             self.command_buffers.clear();
             for pipeline in &mut self.pipelines {
                 pipeline.destroy_swapchain(&self.device);
-            }
-            if self.render_pass != vk::RenderPass::null() {
-                self.device.destroy_render_pass(self.render_pass, None);
-                self.render_pass = vk::RenderPass::null();
             }
             for view in self.swapchain_image_views.drain(..) {
                 self.device.destroy_image_view(view, None);
@@ -683,6 +722,8 @@ impl Renderer {
 impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
+            // Final idle wait makes teardown simple: no submitted command buffer
+            // can still be using resources we are about to destroy.
             let _ = self.device.device_wait_idle();
             self.destroy_swapchain_resources();
             for semaphore in self.image_available_semaphores.drain(..) {
@@ -698,10 +739,53 @@ impl Drop for Renderer {
                 pipeline.destroy(&self.device);
             }
             self.pipelines.clear();
+            // Device must outlive all device-created objects. Surface and instance
+            // are instance-level objects, so they are destroyed afterward.
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
         }
+    }
+}
+
+fn transition_image(
+    device: &ash::Device,
+    command_buffer: vk::CommandBuffer,
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+    src_access_mask: vk::AccessFlags,
+    dst_access_mask: vk::AccessFlags,
+    src_stage_mask: vk::PipelineStageFlags,
+    dst_stage_mask: vk::PipelineStageFlags,
+) {
+    let barrier = vk::ImageMemoryBarrier::default()
+        .old_layout(old_layout)
+        .new_layout(new_layout)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(
+            vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_mip_level(0)
+                .level_count(1)
+                .base_array_layer(0)
+                .layer_count(1),
+        )
+        .src_access_mask(src_access_mask)
+        .dst_access_mask(dst_access_mask);
+
+    unsafe {
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            src_stage_mask,
+            dst_stage_mask,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            std::slice::from_ref(&barrier),
+        );
     }
 }
 
@@ -710,18 +794,14 @@ fn pick_physical_device(
     surface_loader: &khr::surface::Instance,
     surface: vk::SurfaceKHR,
 ) -> Result<(vk::PhysicalDevice, QueueFamilyIndices), String> {
+    // Enumerate installed Vulkan-capable adapters and pick the first one that
+    // has queue families and swapchain support for this surface.
     let devices = unsafe { instance.enumerate_physical_devices() }
         .map_err(|e| format!("enumerate_physical_devices: {e:?}"))?;
 
     for device in devices {
         if let Some(indices) = find_queue_families(instance, device, surface_loader, surface)? {
-            let extensions = unsafe { instance.enumerate_device_extension_properties(device) }
-                .map_err(|e| format!("enumerate_device_extension_properties: {e:?}"))?;
-            let swapchain_supported = extensions.iter().any(|prop| {
-                let name = unsafe { std::ffi::CStr::from_ptr(prop.extension_name.as_ptr()) };
-                name.to_bytes() == khr::swapchain::NAME.to_bytes()
-            });
-            if swapchain_supported {
+            if physical_device_supports_required_capabilities(instance, device)? {
                 return Ok((device, indices));
             }
         }
@@ -730,20 +810,72 @@ fn pick_physical_device(
     Err("no suitable Vulkan device found".to_string())
 }
 
+fn physical_device_supports_required_capabilities(
+    instance: &ash::Instance,
+    device: vk::PhysicalDevice,
+) -> Result<bool, String> {
+    let properties = unsafe { instance.get_physical_device_properties(device) };
+    if properties.api_version < vk::API_VERSION_1_3 {
+        return Ok(false);
+    }
+
+    // Swapchain support is mandatory because the app presents to a window.
+    let extensions = unsafe { instance.enumerate_device_extension_properties(device) }
+        .map_err(|e| format!("enumerate_device_extension_properties: {e:?}"))?;
+    let swapchain_supported = extensions.iter().any(|prop| {
+        let name = unsafe { std::ffi::CStr::from_ptr(prop.extension_name.as_ptr()) };
+        name.to_bytes() == khr::swapchain::NAME.to_bytes()
+    });
+    if !swapchain_supported {
+        return Ok(false);
+    }
+
+    let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default();
+    let mut features =
+        vk::PhysicalDeviceFeatures2::default().push_next(&mut dynamic_rendering_features);
+    unsafe {
+        instance.get_physical_device_features2(device, &mut features);
+    }
+    if dynamic_rendering_features.dynamic_rendering == vk::FALSE {
+        return Ok(false);
+    }
+
+    // The compute pass writes an rgba8 storage image, then copies it to the swapchain.
+    let compute_target_format = unsafe {
+        instance.get_physical_device_format_properties(device, vk::Format::R8G8B8A8_UNORM)
+    };
+    let required_format_features =
+        vk::FormatFeatureFlags::STORAGE_IMAGE | vk::FormatFeatureFlags::TRANSFER_SRC;
+    if !compute_target_format
+        .optimal_tiling_features
+        .contains(required_format_features)
+    {
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
 fn find_queue_families(
     instance: &ash::Instance,
     device: vk::PhysicalDevice,
     surface_loader: &khr::surface::Instance,
     surface: vk::SurfaceKHR,
 ) -> Result<Option<QueueFamilyIndices>, String> {
+    // Queue families describe which operations queues can perform. Presentation
+    // support is surface-specific, so it must be queried separately.
     let families = unsafe { instance.get_physical_device_queue_family_properties(device) };
     let mut graphics_family = None;
     let mut present_family = None;
 
     for (index, family) in families.iter().enumerate() {
-        if family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
+        // The app records graphics, compute, and transfer work into one command
+        // buffer submitted to this queue family.
+        let required_queue_flags = vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE;
+        if family.queue_flags.contains(required_queue_flags) {
             graphics_family = Some(index as u32);
         }
+        // Present support means this queue family can hand images to this window surface.
         let present_support = unsafe {
             surface_loader.get_physical_device_surface_support(device, index as u32, surface)
         }
