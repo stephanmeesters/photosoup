@@ -1,4 +1,4 @@
-use super::{EguiFrame, PerFrameGoodies, PerThreadGoodies, RendererError};
+use super::{EguiFrame, RendererError};
 use ash::vk;
 
 // Data that only changes when the window surface/swapchain changes.
@@ -27,7 +27,7 @@ pub struct FrameBeginContext<'a> {
 }
 
 // Data available while recording work that happens before dynamic rendering.
-pub struct FrameContext<'a>{
+pub struct FrameContext<'a> {
     pub device: &'a ash::Device,
     // Command buffers do not execute immediately. Calls prefixed with cmd_* append GPU commands here.
     pub command_buffer: vk::CommandBuffer,

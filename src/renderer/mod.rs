@@ -264,54 +264,11 @@ impl Renderer {
             return Ok(());
         }
 
-        //////////////////
-        if let Some(pfg) = self.per_frame_goodies_list[self.current_frame].take() {
-            for bb in pfg.per_thread_goodies.iter() {
-                unsafe { self.device.destroy_command_pool(bb.command_pool, None) };
-            }
-            unsafe { self.device.destroy_command_pool(pfg.command_pool, None) };
-        }
-
-        //////////////////
-        let pool_info = vk::CommandPoolCreateInfo::default()
-            .queue_family_index(self.graphics_family)
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-        let command_pool = unsafe { self.device.create_command_pool(&pool_info, None) }.unwrap();
-
-        // Use one primary command buffer per swapchain image.
-        let alloc_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(command_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-        let command_buffers = unsafe { self.device.allocate_command_buffers(&alloc_info) }.unwrap();
-        let command_buffer = command_buffers[0];
-
-        let mut ptg = Vec::new();
-        for _ in 0..self.pipelines.len() {
-            let sec_pool_info = vk::CommandPoolCreateInfo::default()
-                .queue_family_index(self.graphics_family)
-                .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-            let sec_command_pool = unsafe { self.device.create_command_pool(&sec_pool_info, None) }.unwrap();
-
-            let sec_alloc_info = vk::CommandBufferAllocateInfo::default()
-                .command_pool(sec_command_pool)
-                .level(vk::CommandBufferLevel::SECONDARY)
-                .command_buffer_count(2);
-            let sec_command_buffers = unsafe { self.device.allocate_command_buffers(&sec_alloc_info) }.unwrap();
-
-            ptg.push(PerThreadGoodies {
-                command_pool: sec_command_pool,
-                command_buffers: sec_command_buffers,
-            })
-        }
-
-        let pfg = PerFrameGoodies {
-            command_pool,
-            command_buffers,
-            per_thread_goodies: ptg,
-        };
-
-        //////////////////
+        let pfg = self.per_frame_goodies_list[self.current_frame]
+            .as_ref()
+            .ok_or_else(|| RendererError::Fatal("missing per-frame command buffers".to_string()))?;
+        let command_pool = pfg.command_pool;
+        let command_buffer = pfg.command_buffers[0];
 
         let begin_context = FrameBeginContext {
             frame_index: self.current_frame,
@@ -361,7 +318,6 @@ impl Renderer {
         }
 
         self.pipelines.par_iter_mut().enumerate().for_each(|(index, pipeline)| {
-
             let frame_context = FrameContext {
                 device: &self.device,
                 command_buffer: pfg.per_thread_goodies[index].command_buffers[0],
@@ -370,6 +326,11 @@ impl Renderer {
             };
 
             let sec = frame_context.command_buffer;
+            unsafe {
+                self.device
+                    .reset_command_buffer(sec, vk::CommandBufferResetFlags::empty())
+                    .unwrap()
+            };
             let inheritance_info = vk::CommandBufferInheritanceInfo::default();
             let begin_info = vk::CommandBufferBeginInfo::default()
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
@@ -389,6 +350,11 @@ impl Renderer {
             };
 
             let sec = rendering_context.command_buffer;
+            unsafe {
+                self.device
+                    .reset_command_buffer(sec, vk::CommandBufferResetFlags::empty())
+                    .unwrap()
+            };
             let color_attachment_formats = [self.swapchain_format];
             let mut inheritance_rendering_info = vk::CommandBufferInheritanceRenderingInfo::default()
                 .color_attachment_formats(&color_attachment_formats)
@@ -528,8 +494,6 @@ impl Renderer {
         for pipeline in &mut self.pipelines {
             pipeline.finish_frame(&finish_context);
         }
-
-        self.per_frame_goodies_list[self.current_frame] = Some(pfg);
 
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
 
@@ -696,8 +660,7 @@ impl Renderer {
         for pipeline in &mut self.pipelines {
             pipeline.on_swapchain_created(&swapchain_context)?;
         }
-        // self.create_command_pool()?;
-        // self.create_command_buffers()?;
+        self.create_per_frame_goodies()?;
         self.create_render_finished_semaphores()?;
         Ok(())
     }
@@ -730,30 +693,71 @@ impl Renderer {
         Ok(())
     }
 
-    // fn create_command_pool(&mut self) -> Result<(), String> {
-    //     if self.command_pool != vk::CommandPool::null() {
-    //         unsafe { self.device.destroy_command_pool(self.command_pool, None) };
-    //     }
-    //     // Command buffers allocated from this pool can be submitted to the
-    //     // graphics queue family. RESET_COMMAND_BUFFER permits per-frame reuse.
-    //     let pool_info = vk::CommandPoolCreateInfo::default()
-    //         .queue_family_index(self.graphics_family)
-    //         .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-    //     self.command_pool = unsafe { self.device.create_command_pool(&pool_info, None) }
-    //         .map_err(|e| format!("create_command_pool: {e:?}"))?;
-    //     Ok(())
-    // }
+    fn create_per_frame_goodies(&mut self) -> Result<(), String> {
+        self.destroy_per_frame_goodies();
 
-    // fn create_command_buffers(&mut self) -> Result<(), String> {
-    //     // Use one primary command buffer per swapchain image.
-    //     let alloc_info = vk::CommandBufferAllocateInfo::default()
-    //         .command_pool(self.command_pool)
-    //         .level(vk::CommandBufferLevel::PRIMARY)
-    //         .command_buffer_count(self.swapchain_images.len() as u32);
-    //     self.command_buffers = unsafe { self.device.allocate_command_buffers(&alloc_info) }
-    //         .map_err(|e| format!("allocate_command_buffers: {e:?}"))?;
-    //     Ok(())
-    // }
+        let pool_info = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(self.graphics_family)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        let primary_alloc_info = |command_pool| {
+            vk::CommandBufferAllocateInfo::default()
+                .command_pool(command_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1)
+        };
+        let secondary_alloc_info = |command_pool| {
+            vk::CommandBufferAllocateInfo::default()
+                .command_pool(command_pool)
+                .level(vk::CommandBufferLevel::SECONDARY)
+                .command_buffer_count(2)
+        };
+
+        self.per_frame_goodies_list = (0..MAX_FRAMES_IN_FLIGHT)
+            .map(|_| {
+                let command_pool = unsafe { self.device.create_command_pool(&pool_info, None) }
+                    .map_err(|e| format!("create primary command_pool: {e:?}"))?;
+                let command_buffers =
+                    unsafe { self.device.allocate_command_buffers(&primary_alloc_info(command_pool)) }
+                        .map_err(|e| format!("allocate primary command_buffers: {e:?}"))?;
+
+                let per_thread_goodies = (0..self.pipelines.len())
+                    .map(|_| {
+                        let command_pool = unsafe { self.device.create_command_pool(&pool_info, None) }
+                            .map_err(|e| format!("create secondary command_pool: {e:?}"))?;
+                        let command_buffers = unsafe {
+                            self.device
+                                .allocate_command_buffers(&secondary_alloc_info(command_pool))
+                        }
+                        .map_err(|e| format!("allocate secondary command_buffers: {e:?}"))?;
+
+                        Ok(PerThreadGoodies {
+                            command_pool,
+                            command_buffers,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+
+                Ok(Some(PerFrameGoodies {
+                    command_pool,
+                    command_buffers,
+                    per_thread_goodies,
+                }))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+
+        Ok(())
+    }
+
+    fn destroy_per_frame_goodies(&mut self) {
+        unsafe {
+            for pfg in self.per_frame_goodies_list.drain(..).flatten() {
+                for ptg in pfg.per_thread_goodies {
+                    self.device.destroy_command_pool(ptg.command_pool, None);
+                }
+                self.device.destroy_command_pool(pfg.command_pool, None);
+            }
+        }
+    }
 
     fn create_sync_objects(&mut self) -> Result<(), String> {
         let semaphore_info = vk::SemaphoreCreateInfo::default();
@@ -838,14 +842,7 @@ impl Drop for Renderer {
                 self.device.destroy_fence(fence, None);
             }
 
-            for ff in self.per_frame_goodies_list.iter() {
-                if let Some(pfg) = ff {
-                    for bb in pfg.per_thread_goodies.iter() {
-                        self.device.destroy_command_pool(bb.command_pool, None);
-                    }
-                    self.device.destroy_command_pool(pfg.command_pool, None);
-                }
-            }
+            self.destroy_per_frame_goodies();
             // if self.command_pool != vk::CommandPool::null() {
             //     self.device.destroy_command_pool(self.command_pool, None);
             // }
