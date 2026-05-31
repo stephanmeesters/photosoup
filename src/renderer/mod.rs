@@ -296,7 +296,7 @@ impl Renderer {
             let sec_alloc_info = vk::CommandBufferAllocateInfo::default()
                 .command_pool(sec_command_pool)
                 .level(vk::CommandBufferLevel::SECONDARY)
-                .command_buffer_count(1);
+                .command_buffer_count(2);
             let sec_command_buffers = unsafe { self.device.allocate_command_buffers(&sec_alloc_info) }.unwrap();
 
             ptg.push(PerThreadGoodies {
@@ -360,7 +360,7 @@ impl Renderer {
         }
 
         // circle only
-        for (index, pipeline) in &mut self.pipelines.iter_mut().enumerate() {
+        for (index, pipeline) in self.pipelines.iter_mut().enumerate() {
             let frame_context = FrameContext {
                 device: self.device.clone(),
                 command_buffer: pfg.per_thread_goodies[index].command_buffers[0],
@@ -381,26 +381,34 @@ impl Renderer {
         let secondaries: Vec<vk::CommandBuffer> = pfg.per_thread_goodies.iter().map(|p| p.command_buffers[0]).collect();
         unsafe { self.device.cmd_execute_commands(command_buffer, &secondaries) };
 
-        unsafe {
-            // egui and triangle
-            for pipeline in &mut self.pipelines {
-                // Dynamic rendering binds the current swapchain image view as the
-                // active color attachment without a VkRenderPass/VkFramebuffer pair.
-                self.device.cmd_begin_rendering(command_buffer, &rendering_info);
-                let rendering_context = RenderingContext {
-                    device: &self.device,
-                    command_buffer,
-                    extent: self.swapchain_extent,
-                    egui_frame: egui_frame1,
-                };
+        // Dynamic rendering binds the current swapchain image view as the
+        // active color attachment without a VkRenderPass/VkFramebuffer pair.
+        unsafe { self.device.cmd_begin_rendering(command_buffer, &rendering_info) };
 
-                // Graphics pipelines and egui record draw calls while the color
-                // attachment is active.
-                pipeline.record_rendering(&rendering_context).unwrap();
-            }
+        // egui and triangle
+        for (index, pipeline) in self.pipelines.iter_mut().enumerate() {
+            let rendering_context = RenderingContext {
+                device: &self.device,
+                command_buffer: pfg.per_thread_goodies[index].command_buffers[1],
+                extent: self.swapchain_extent,
+                egui_frame: egui_frame1,
+            };
 
-            self.device.cmd_end_rendering(command_buffer);
+            let sec = rendering_context.command_buffer;
+            let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+            unsafe { self.device.begin_command_buffer(sec, &begin_info).unwrap() };
+
+            // Graphics pipelines and egui record draw calls while the color
+            // attachment is active.
+            pipeline.record_rendering(&rendering_context).unwrap();
+
+            unsafe { self.device.end_command_buffer(sec).unwrap() };
         }
+
+        let secondaries: Vec<vk::CommandBuffer> = pfg.per_thread_goodies.iter().map(|p| p.command_buffers[1]).collect();
+        unsafe { self.device.cmd_execute_commands(command_buffer, &secondaries) };
+
+        unsafe { self.device.cmd_end_rendering(command_buffer) };
         Ok(()).map_err(RendererError::Fatal)?;
 
         // Hand the acquired swapchain image from rendering back to presentation.
