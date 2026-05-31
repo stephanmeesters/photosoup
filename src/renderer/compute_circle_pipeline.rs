@@ -50,7 +50,7 @@ impl Pipeline for ComputeCirclePass {
         }
     }
 
-    fn record_before_rendering(&mut self, ctx: &FrameContext<'_>) -> Result<(), String> {
+    fn record_before_rendering(&mut self, ctx: &FrameContext) -> Result<(), String> {
         let targets = self
             .targets
             .as_ref()
@@ -58,8 +58,8 @@ impl Pipeline for ComputeCirclePass {
         // The compute pass runs before graphics rendering. It writes a full-screen
         // image, then copies that image into the acquired swapchain image.
         self.pipeline
-            .record(ctx.device, ctx.command_buffer, targets, ctx.image_index)?;
-        targets.record_copy_to_swapchain(ctx.device, ctx.command_buffer, ctx.image_index, ctx.swapchain_image)
+            .record(&ctx.device, ctx.command_buffer, targets, ctx.image_index)?;
+        targets.record_copy_to_swapchain(&ctx.device, ctx.command_buffer, ctx.image_index, ctx.swapchain_image)
     }
 
     fn destroy(&mut self, device: &ash::Device) {

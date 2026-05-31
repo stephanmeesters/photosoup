@@ -259,6 +259,12 @@ impl Renderer {
             other => RendererError::Fatal(format!("acquire_next_image: {other:?}")),
         })?;
 
+        if acquire_suboptimal {
+            self.recreate_swapchain();
+            return Ok(());
+        }
+
+        //////////////////
         if let Some(pfg) = self.per_frame_goodies_list[self.current_frame].as_mut() {
             for bb in pfg.per_thread_goodies.iter() {
                 unsafe { self.device.destroy_command_pool(bb.command_pool, None) };
@@ -311,32 +317,129 @@ impl Renderer {
             command_pool,
             egui_frame: egui_frame.as_ref(),
         };
-        
+        // egui only
         for pipeline in &mut self.pipelines {
             pipeline.begin_frame(&begin_context)?;
         }
 
-        if acquire_suboptimal {
-            self.recreate_swapchain();
-            return Ok(());
+        // Record all GPU commands for the acquired image before submitting them.
+        let egui_frame1 = egui_frame.as_ref();
+        unsafe {
+            // RESET_COMMAND_BUFFER lets us reuse the per-image command buffer
+            // instead of allocating a new one every frame.
+            self.device
+                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
+                .map_err(|e| format!("reset_command_buffer: {e:?}")).unwrap();
         }
 
-        // Record all GPU commands for the acquired image before submitting them.
-        self.record_command_buffer(command_buffer, image_index, egui_frame.as_ref())
-            .map_err(RendererError::Fatal)?;
+        let color_attachment = vk::RenderingAttachmentInfo::default()
+            .image_view(self.swapchain_image_views[image_index as usize])
+            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::LOAD)
+            .store_op(vk::AttachmentStoreOp::STORE);
+        let color_attachments = [color_attachment];
+        let rendering_info = vk::RenderingInfo::default()
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: self.swapchain_extent,
+            })
+            .layer_count(1)
+            .color_attachments(&color_attachments);
 
-        // pipeline barrier
-        transition_image(
-            &self.device,
+        let begin_info = vk::CommandBufferBeginInfo::default();
+
+        unsafe {
+            // After begin_command_buffer, cmd_* calls append GPU work into this buffer.
+            self.device
+                .begin_command_buffer(command_buffer, &begin_info)
+                .map_err(|e| format!("begin_command_buffer: {e:?}")).unwrap();
+        }
+
+        let frame_context = FrameContext {
+            device: self.device.clone(),
             command_buffer,
-            self.swapchain_images[image_index as usize],
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            vk::ImageLayout::PRESENT_SRC_KHR,
-            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-            vk::AccessFlags::empty(),
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-        );
+            image_index: image_index as usize,
+            swapchain_image: self.swapchain_images[image_index as usize],
+        };
+        // circle only
+        for pipeline in &mut self.pipelines {
+            // Compute and image-copy work happens before dynamic rendering starts.
+            pipeline.record_before_rendering(&frame_context).unwrap();
+        }
+
+        unsafe {
+            // Dynamic rendering binds the current swapchain image view as the
+            // active color attachment without a VkRenderPass/VkFramebuffer pair.
+            self.device.cmd_begin_rendering(command_buffer, &rendering_info);
+            let rendering_context = RenderingContext {
+                device: &self.device,
+                command_buffer,
+                extent: self.swapchain_extent,
+                egui_frame: egui_frame1,
+            };
+            // egui and triangle
+            for pipeline in &mut self.pipelines {
+                // Graphics pipelines and egui record draw calls while the color
+                // attachment is active.
+                pipeline.record_rendering(&rendering_context).unwrap();
+            }
+
+            self.device.cmd_end_rendering(command_buffer);
+        }
+        Ok(()).map_err(RendererError::Fatal)?;
+
+        // Hand the acquired swapchain image from rendering back to presentation.
+        //
+        // record_command_buffer leaves the image in COLOR_ATTACHMENT_OPTIMAL after
+        // compute/copy work and dynamic rendering have finished writing it. The
+        // presentation engine cannot read that layout, so the last recorded GPU
+        // operation for the frame transitions the image to PRESENT_SRC_KHR.
+        let device = &self.device;
+        let image = self.swapchain_images[image_index as usize];
+        let old_layout = vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL;
+        let new_layout = vk::ImageLayout::PRESENT_SRC_KHR;
+
+        // Wait for all color-attachment reads/writes from dynamic rendering to be
+        // complete before the layout transition. Presentation itself is ordered by
+        // the render_finished semaphore, so there is no destination access mask.
+        let src_access_mask = vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE;
+        let dst_access_mask = vk::AccessFlags::empty();
+        let src_stage_mask = vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT;
+        let dst_stage_mask = vk::PipelineStageFlags::BOTTOM_OF_PIPE;
+
+        // This barrier applies only to the one 2D color image that was acquired
+        // from the swapchain for this frame. Queue family ownership is unchanged.
+        let barrier = vk::ImageMemoryBarrier::default()
+            .old_layout(old_layout)
+            .new_layout(new_layout)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(
+                vk::ImageSubresourceRange::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .base_mip_level(0)
+                    .level_count(1)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            )
+            .src_access_mask(src_access_mask)
+            .dst_access_mask(dst_access_mask);
+
+        unsafe {
+            // Record the synchronization/layout transition into the same command
+            // buffer as the rendering. It will execute on the GPU after the
+            // preceding draw commands and before the command buffer completes.
+            device.cmd_pipeline_barrier(
+                command_buffer,
+                src_stage_mask,
+                dst_stage_mask,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                std::slice::from_ref(&barrier),
+            );
+        }
 
         unsafe {
             // Ending finalizes validation of the recorded commands. The buffer is
@@ -389,6 +492,7 @@ impl Renderer {
             frame_index: self.current_frame,
             egui_frame: egui_frame.as_ref(),
         };
+        // egui only
         for pipeline in &mut self.pipelines {
             pipeline.finish_frame(&finish_context);
         }
@@ -404,76 +508,6 @@ impl Renderer {
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => Err(RendererError::OutOfDate),
             Err(err) => Err(RendererError::Fatal(format!("queue_present: {err:?}"))),
         }
-    }
-
-    fn record_command_buffer(
-        &mut self,
-        command_buffer: vk::CommandBuffer,
-        image_index: u32,
-        egui_frame: Option<&EguiFrame>,
-    ) -> Result<(), String> {
-        unsafe {
-            // RESET_COMMAND_BUFFER lets us reuse the per-image command buffer
-            // instead of allocating a new one every frame.
-            self.device
-                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
-                .map_err(|e| format!("reset_command_buffer: {e:?}"))?;
-        }
-
-        let color_attachment = vk::RenderingAttachmentInfo::default()
-            .image_view(self.swapchain_image_views[image_index as usize])
-            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .load_op(vk::AttachmentLoadOp::LOAD)
-            .store_op(vk::AttachmentStoreOp::STORE);
-        let color_attachments = [color_attachment];
-        let rendering_info = vk::RenderingInfo::default()
-            .render_area(vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: self.swapchain_extent,
-            })
-            .layer_count(1)
-            .color_attachments(&color_attachments);
-
-        let begin_info = vk::CommandBufferBeginInfo::default();
-
-        unsafe {
-            // After begin_command_buffer, cmd_* calls append GPU work into this buffer.
-            self.device
-                .begin_command_buffer(command_buffer, &begin_info)
-                .map_err(|e| format!("begin_command_buffer: {e:?}"))?;
-        }
-
-        let frame_context = FrameContext {
-            device: &self.device,
-            command_buffer,
-            image_index: image_index as usize,
-            swapchain_image: self.swapchain_images[image_index as usize],
-        };
-        for pipeline in &mut self.pipelines {
-            // Compute and image-copy work happens before dynamic rendering starts.
-            pipeline.record_before_rendering(&frame_context)?;
-        }
-
-        unsafe {
-            // Dynamic rendering binds the current swapchain image view as the
-            // active color attachment without a VkRenderPass/VkFramebuffer pair.
-            self.device.cmd_begin_rendering(command_buffer, &rendering_info);
-            let rendering_context = RenderingContext {
-                device: &self.device,
-                command_buffer,
-                extent: self.swapchain_extent,
-                egui_frame,
-            };
-            for pipeline in &mut self.pipelines {
-                // Graphics pipelines and egui record draw calls while the color
-                // attachment is active.
-                pipeline.record_rendering(&rendering_context)?;
-            }
-
-            self.device.cmd_end_rendering(command_buffer);
-        }
-
-        Ok(())
     }
 
     fn create_swapchain(&mut self, extent_hint: vk::Extent2D) -> Result<(), String> {
@@ -791,47 +825,6 @@ impl Drop for Renderer {
             self.surface_loader.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
         }
-    }
-}
-
-fn transition_image(
-    device: &ash::Device,
-    command_buffer: vk::CommandBuffer,
-    image: vk::Image,
-    old_layout: vk::ImageLayout,
-    new_layout: vk::ImageLayout,
-    src_access_mask: vk::AccessFlags,
-    dst_access_mask: vk::AccessFlags,
-    src_stage_mask: vk::PipelineStageFlags,
-    dst_stage_mask: vk::PipelineStageFlags,
-) {
-    let barrier = vk::ImageMemoryBarrier::default()
-        .old_layout(old_layout)
-        .new_layout(new_layout)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(image)
-        .subresource_range(
-            vk::ImageSubresourceRange::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .base_mip_level(0)
-                .level_count(1)
-                .base_array_layer(0)
-                .layer_count(1),
-        )
-        .src_access_mask(src_access_mask)
-        .dst_access_mask(dst_access_mask);
-
-    unsafe {
-        device.cmd_pipeline_barrier(
-            command_buffer,
-            src_stage_mask,
-            dst_stage_mask,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            std::slice::from_ref(&barrier),
-        );
     }
 }
 
