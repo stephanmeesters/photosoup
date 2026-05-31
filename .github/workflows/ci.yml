@@ -8,6 +8,9 @@ jobs:
   rust:
     name: Rust
     runs-on: ubuntu-latest
+    env:
+      DXC_VERSION: v1.9.2602
+      DXC_ARCHIVE: linux_dxc_2026_02_20.x86_64.tar.gz
 
     steps:
       - name: Checkout
@@ -16,7 +19,20 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libshaderc-dev libstdc++-12-dev
+          sudo apt-get install -y curl libshaderc-dev libstdc++-12-dev
+
+      - name: Install DXC
+        run: |
+          curl -L -o /tmp/dxc.tar.gz "https://github.com/microsoft/DirectXShaderCompiler/releases/download/${DXC_VERSION}/${DXC_ARCHIVE}"
+          sudo mkdir -p /opt/dxc
+          sudo tar -xzf /tmp/dxc.tar.gz -C /opt/dxc
+          sudo install -m 0755 /opt/dxc/bin/dxc /usr/local/bin/dxc
+          sudo install -m 0644 /opt/dxc/lib/libdxcompiler.so /usr/local/lib/libdxcompiler.so
+          if [ -f /opt/dxc/lib/libdxil.so ]; then
+            sudo install -m 0644 /opt/dxc/lib/libdxil.so /usr/local/lib/libdxil.so
+          fi
+          sudo ldconfig
+          dxc --version
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
