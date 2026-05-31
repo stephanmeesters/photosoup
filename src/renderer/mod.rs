@@ -262,6 +262,27 @@ impl Renderer {
         self.record_command_buffer(command_buffer, image_index, egui_frame.as_ref())
             .map_err(RendererError::Fatal)?;
 
+        // pipeline barrier
+        transition_image(
+            &self.device,
+            command_buffer,
+            self.swapchain_images[image_index as usize],
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            vk::AccessFlags::empty(),
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+        );
+
+        unsafe {
+            // Ending finalizes validation of the recorded commands. The buffer is
+            // then ready to submit to a queue.
+            self.device
+                .end_command_buffer(command_buffer)
+                .map_err(|e| RendererError::Fatal(format!("end_command_buffer: {e:?}")))?;
+        }
+
         unsafe {
             // The fence is about to be used for a new queue submission, so it must
             // be unsignaled before queue_submit attaches it.
@@ -336,6 +357,20 @@ impl Renderer {
                 .map_err(|e| format!("reset_command_buffer: {e:?}"))?;
         }
 
+        let color_attachment = vk::RenderingAttachmentInfo::default()
+            .image_view(self.swapchain_image_views[image_index as usize])
+            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::LOAD)
+            .store_op(vk::AttachmentStoreOp::STORE);
+        let color_attachments = [color_attachment];
+        let rendering_info = vk::RenderingInfo::default()
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: self.swapchain_extent,
+            })
+            .layer_count(1)
+            .color_attachments(&color_attachments);
+
         let begin_info = vk::CommandBufferBeginInfo::default();
 
         unsafe {
@@ -356,20 +391,6 @@ impl Renderer {
             pipeline.record_before_rendering(&frame_context)?;
         }
 
-        let color_attachment = vk::RenderingAttachmentInfo::default()
-            .image_view(self.swapchain_image_views[image_index as usize])
-            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .load_op(vk::AttachmentLoadOp::LOAD)
-            .store_op(vk::AttachmentStoreOp::STORE);
-        let color_attachments = [color_attachment];
-        let rendering_info = vk::RenderingInfo::default()
-            .render_area(vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: self.swapchain_extent,
-            })
-            .layer_count(1)
-            .color_attachments(&color_attachments);
-
         unsafe {
             // Dynamic rendering binds the current swapchain image view as the
             // active color attachment without a VkRenderPass/VkFramebuffer pair.
@@ -387,26 +408,6 @@ impl Renderer {
             }
 
             self.device.cmd_end_rendering(command_buffer);
-        }
-
-        transition_image(
-            &self.device,
-            command_buffer,
-            self.swapchain_images[image_index as usize],
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            vk::ImageLayout::PRESENT_SRC_KHR,
-            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-            vk::AccessFlags::empty(),
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-        );
-
-        unsafe {
-            // Ending finalizes validation of the recorded commands. The buffer is
-            // then ready to submit to a queue.
-            self.device
-                .end_command_buffer(command_buffer)
-                .map_err(|e| format!("end_command_buffer: {e:?}"))?;
         }
 
         Ok(())
@@ -533,6 +534,7 @@ impl Renderer {
         // then egui overlay.
         let compute_circle_pass =
             ComputeCirclePass::new(&self.device).map_err(|e| format!("create_compute_circle_pipeline: {e}"))?;
+
         let egui_pipeline = EguiPipeline::new(
             &self.instance,
             self.physical_device,
@@ -540,6 +542,7 @@ impl Renderer {
             self.swapchain_format,
         )
         .map_err(|e| format!("create_egui_pipeline: {e}"))?;
+
         self.pipelines = vec![
             Box::new(compute_circle_pass),
             Box::new(TrianglePass::default()),
