@@ -57,6 +57,7 @@ impl Pipeline for ComputeCirclePass {
             .ok_or_else(|| "missing compute targets".to_string())?;
         // The compute pass runs before graphics rendering. It writes a full-screen
         // image, then copies that image into the acquired swapchain image.
+
         self.pipeline
             .record(&ctx.device, ctx.command_buffer, targets, ctx.image_index)?;
         targets.record_copy_to_swapchain(&ctx.device, ctx.command_buffer, ctx.image_index, ctx.swapchain_image)

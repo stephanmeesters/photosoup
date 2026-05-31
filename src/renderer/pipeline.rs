@@ -1,4 +1,4 @@
-use super::{EguiFrame, RendererError};
+use super::{EguiFrame, PerFrameGoodies, PerThreadGoodies, RendererError};
 use ash::vk;
 
 // Data that only changes when the window surface/swapchain changes.
