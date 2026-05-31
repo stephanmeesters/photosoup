@@ -4,6 +4,7 @@ use crate::{
 };
 use egui_winit::State as EguiWinitState;
 use std::time::Instant;
+use std::collections::VecDeque;
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -12,6 +13,8 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
+const FRAMETIME_QUEUE_LEN: usize = 4096;
+
 #[derive(Default)]
 pub struct App {
     window: Option<Window>,
@@ -19,7 +22,7 @@ pub struct App {
     egui_ctx: egui::Context,
     egui_state: Option<EguiWinitState>,
     start_time: Option<Instant>,
-    last_frame_time: Option<Instant>,
+    frame_times: Option<VecDeque<Instant>>
 }
 
 impl ApplicationHandler for App {
@@ -45,7 +48,7 @@ impl ApplicationHandler for App {
         );
 
         self.start_time = Some(Instant::now());
-        self.last_frame_time = None;
+        self.frame_times = Some(VecDeque::with_capacity(FRAMETIME_QUEUE_LEN));
         self.renderer = Some(renderer);
         self.egui_state = Some(egui_state);
         self.window = Some(window);
@@ -75,20 +78,19 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let (Some(renderer), Some(egui_state), Some(start_time)) =
-                    (self.renderer.as_mut(), self.egui_state.as_mut(), self.start_time)
+                if let (Some(renderer), Some(egui_state), Some(start_time), Some(frame_queue)) =
+                    (self.renderer.as_mut(), self.egui_state.as_mut(), self.start_time, self.frame_times.as_mut())
                 {
                     let now = Instant::now();
-                    let frame_dt = self
-                        .last_frame_time
-                        .replace(now)
-                        .map(|previous| now.saturating_duration_since(previous))
-                        .unwrap_or_default();
-                    let fps = if frame_dt.is_zero() {
-                        0.0
-                    } else {
-                        1.0 / frame_dt.as_secs_f32()
-                    };
+                    if frame_queue.len() == FRAMETIME_QUEUE_LEN
+                    {
+                        frame_queue.pop_front();
+                    }
+                    frame_queue.push_back(now);
+
+                    let sum:f32 = frame_queue.make_contiguous().windows(2).map(|w| (w[1] - w[0]).as_secs_f32()).sum();
+                    let fps: f32 = frame_queue.len() as f32 / sum;
+
                     let elapsed = now.saturating_duration_since(start_time);
                     let raw_input = egui_state.take_egui_input(window);
                     let ui_state = UiState { elapsed, fps };
