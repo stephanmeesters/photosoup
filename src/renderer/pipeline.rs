@@ -27,8 +27,8 @@ pub struct FrameBeginContext<'a> {
 }
 
 // Data available while recording work that happens before dynamic rendering.
-pub struct FrameContext {
-    pub device: ash::Device,
+pub struct FrameContext<'a>{
+    pub device: &'a ash::Device,
     // Command buffers do not execute immediately. Calls prefixed with cmd_* append GPU commands here.
     pub command_buffer: vk::CommandBuffer,
     // Index into swapchain-sized per-image resource arrays.
@@ -71,7 +71,7 @@ pub trait Pipeline {
 
     // Record commands outside dynamic rendering: compute dispatch, image copies,
     // layout transitions, transfer operations, and other non-subpass work.
-    fn record_before_rendering(&mut self, _ctx: &FrameContext) -> Result<(), String> {
+    fn record_before_rendering(&mut self, _ctx: &FrameContext<'_>) -> Result<(), String> {
         Ok(())
     }
 

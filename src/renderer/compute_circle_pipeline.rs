@@ -50,7 +50,7 @@ impl Pipeline for ComputeCirclePass {
         }
     }
 
-    fn record_before_rendering(&mut self, ctx: &FrameContext) -> Result<(), String> {
+    fn record_before_rendering(&mut self, ctx: &FrameContext<'_>) -> Result<(), String> {
         let targets = self
             .targets
             .as_ref()

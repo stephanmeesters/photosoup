@@ -57,7 +57,7 @@ pub struct Renderer {
     swapchain_image_views: Vec<vk::ImageView>,
     swapchain_format: vk::Format,
     swapchain_extent: vk::Extent2D,
-    pipelines: Vec<Box<dyn Pipeline>>,
+    pipelines: Vec<Box<dyn Pipeline + Send>>,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
     image_available_semaphores: Vec<vk::Semaphore>,
@@ -265,7 +265,7 @@ impl Renderer {
         }
 
         //////////////////
-        if let Some(pfg) = self.per_frame_goodies_list[self.current_frame].as_mut() {
+        if let Some(pfg) = self.per_frame_goodies_list[self.current_frame].take() {
             for bb in pfg.per_thread_goodies.iter() {
                 unsafe { self.device.destroy_command_pool(bb.command_pool, None) };
             }
@@ -287,7 +287,7 @@ impl Renderer {
         let command_buffer = command_buffers[0];
 
         let mut ptg = Vec::new();
-        for _ in 0..3 {
+        for _ in 0..self.pipelines.len() {
             let sec_pool_info = vk::CommandPoolCreateInfo::default()
                 .queue_family_index(self.graphics_family)
                 .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
@@ -360,10 +360,10 @@ impl Renderer {
                 .unwrap();
         }
 
-        // circle only
-        for (index, pipeline) in self.pipelines.iter_mut().enumerate() {
+        self.pipelines.par_iter_mut().enumerate().for_each(|(index, pipeline)| {
+
             let frame_context = FrameContext {
-                device: self.device.clone(),
+                device: &self.device,
                 command_buffer: pfg.per_thread_goodies[index].command_buffers[0],
                 image_index: image_index as usize,
                 swapchain_image: self.swapchain_images[image_index as usize],
@@ -380,17 +380,7 @@ impl Renderer {
             pipeline.record_before_rendering(&frame_context).unwrap();
 
             unsafe { self.device.end_command_buffer(sec).unwrap() };
-        }
 
-        let secondaries: Vec<vk::CommandBuffer> = pfg.per_thread_goodies.iter().map(|p| p.command_buffers[0]).collect();
-        unsafe { self.device.cmd_execute_commands(command_buffer, &secondaries) };
-
-        // Dynamic rendering binds the current swapchain image view as the
-        // active color attachment without a VkRenderPass/VkFramebuffer pair.
-        unsafe { self.device.cmd_begin_rendering(command_buffer, &rendering_info) };
-
-        // egui and triangle
-        for (index, pipeline) in self.pipelines.iter_mut().enumerate() {
             let rendering_context = RenderingContext {
                 device: &self.device,
                 command_buffer: pfg.per_thread_goodies[index].command_buffers[1],
@@ -415,7 +405,14 @@ impl Renderer {
             pipeline.record_rendering(&rendering_context).unwrap();
 
             unsafe { self.device.end_command_buffer(sec).unwrap() };
-        }
+        });
+
+        let secondaries: Vec<vk::CommandBuffer> = pfg.per_thread_goodies.iter().map(|p| p.command_buffers[0]).collect();
+        unsafe { self.device.cmd_execute_commands(command_buffer, &secondaries) };
+
+        // Dynamic rendering binds the current swapchain image view as the
+        // active color attachment without a VkRenderPass/VkFramebuffer pair.
+        unsafe { self.device.cmd_begin_rendering(command_buffer, &rendering_info) };
 
         let secondaries: Vec<vk::CommandBuffer> = pfg.per_thread_goodies.iter().map(|p| p.command_buffers[1]).collect();
         unsafe { self.device.cmd_execute_commands(command_buffer, &secondaries) };
