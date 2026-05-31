@@ -342,6 +342,7 @@ impl Renderer {
             .store_op(vk::AttachmentStoreOp::STORE);
         let color_attachments = [color_attachment];
         let rendering_info = vk::RenderingInfo::default()
+            .flags(vk::RenderingFlags::CONTENTS_SECONDARY_COMMAND_BUFFERS)
             .render_area(vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
                 extent: self.swapchain_extent,
@@ -369,7 +370,10 @@ impl Renderer {
             };
 
             let sec = frame_context.command_buffer;
-            let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+            let inheritance_info = vk::CommandBufferInheritanceInfo::default();
+            let begin_info = vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
+                .inheritance_info(&inheritance_info);
             unsafe { self.device.begin_command_buffer(sec, &begin_info).unwrap() };
 
             // Compute and image-copy work happens before dynamic rendering starts.
@@ -395,7 +399,15 @@ impl Renderer {
             };
 
             let sec = rendering_context.command_buffer;
-            let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+            let color_attachment_formats = [self.swapchain_format];
+            let mut inheritance_rendering_info = vk::CommandBufferInheritanceRenderingInfo::default()
+                .color_attachment_formats(&color_attachment_formats)
+                .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+            let inheritance_info =
+                vk::CommandBufferInheritanceInfo::default().push_next(&mut inheritance_rendering_info);
+            let begin_info = vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT | vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE)
+                .inheritance_info(&inheritance_info);
             unsafe { self.device.begin_command_buffer(sec, &begin_info).unwrap() };
 
             // Graphics pipelines and egui record draw calls while the color
