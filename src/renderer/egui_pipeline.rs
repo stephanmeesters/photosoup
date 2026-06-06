@@ -96,6 +96,10 @@ impl Pipeline for EguiPipeline {
     }
 
     fn destroy(&mut self, _device: &ash::Device) {}
+    
+    fn title(&self) -> &str {
+        "egui"
+    }
 }
 
 fn clamp_primitives_to_extent(

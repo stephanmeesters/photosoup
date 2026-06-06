@@ -65,6 +65,10 @@ impl Pipeline for TrianglePass {
     fn destroy(&mut self, device: &ash::Device) {
         self.destroy_swapchain(device);
     }
+    
+    fn title(&self) -> &str {
+        "Triangle"
+    }
 }
 
 pub struct TrianglePipeline {

@@ -67,6 +67,10 @@ impl Pipeline for ComputeCirclePass {
         self.destroy_swapchain(device);
         self.pipeline.destroy(device);
     }
+
+    fn title(&self) -> &str {
+        "Compute circle"
+    }
 }
 
 pub struct ComputeCirclePipeline {

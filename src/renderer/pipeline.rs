@@ -86,4 +86,6 @@ pub trait Pipeline {
     // Destroy permanent resources. Swapchain-dependent resources should already
     // be gone, but implementations defensively call destroy_swapchain too.
     fn destroy(&mut self, device: &ash::Device);
+
+    fn title(&self) -> &str;
 }

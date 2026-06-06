@@ -14,6 +14,7 @@ use rayon::prelude::*;
 use std::{ffi::CString, os::raw::c_char};
 use triangle_pipeline::TrianglePass;
 use winit::window::Window;
+use tracy_client::{Client, span};
 
 pub(super) const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -219,6 +220,7 @@ impl Renderer {
     }
 
     pub fn recreate_swapchain(&mut self) {
+        let _ = span!("recreate swapchain");
         // Wait for queued work to finish before destroying resources that command
         // buffers or presentation may still reference.
         let _ = unsafe { self.device.device_wait_idle() };
@@ -235,8 +237,10 @@ impl Renderer {
     }
 
     pub fn draw_frame(&mut self, egui_frame: Option<EguiFrame>) -> Result<(), RendererError> {
+        tracy_client::frame_mark();
         let fence = self.in_flight_fences[self.current_frame];
         unsafe {
+            let _ = span!("wait for fences");
             // This fence was attached to the last submit for current_frame. Waiting
             // prevents overwriting per-frame CPU/GPU resources still in use.
             self.device
@@ -247,6 +251,7 @@ impl Renderer {
         // Acquire chooses which swapchain image we may render into. The semaphore
         // is signaled by the presentation engine when that image is ready.
         let (image_index, acquire_suboptimal) = unsafe {
+            let _ = span!("acquire next image");
             self.swapchain_loader.acquire_next_image(
                 self.swapchain,
                 u64::MAX,
@@ -318,6 +323,7 @@ impl Renderer {
         }
 
         self.pipelines.par_iter_mut().enumerate().for_each(|(index, pipeline)| {
+            let _ = span!("pipeline");
             let frame_context = FrameContext {
                 device: &self.device,
                 command_buffer: pfg.per_thread_goodies[index].command_buffers[0],
